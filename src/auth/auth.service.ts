@@ -42,6 +42,28 @@ export class AuthService {
     return createHash('sha256').update(token).digest('hex');
   }
 
+  private resolveLoginEmail(dto: LoginDto) {
+    return dto.email ?? dto.schoolemail;
+  }
+
+  private normalizeRegisterDto(dto: RegisterDto) {
+    const email = dto.email ?? dto.schoolemail;
+    const schoolName = dto.schoolName?.trim() || dto.schooladdress?.trim() || 'School';
+    const nameParts = schoolName.split(/\s+/).filter(Boolean);
+    const firstName = dto.firstName?.trim() || nameParts[0] || 'School';
+    const lastName =
+      dto.lastName?.trim() ||
+      nameParts.slice(1).join(' ') ||
+      'Admin';
+
+    return {
+      email,
+      firstName,
+      lastName,
+      phone: dto.phone,
+    };
+  }
+
   private async issueRefreshToken(userId: string) {
     const refreshToken = randomBytes(32).toString('hex');
     const tokenHash = this.hashToken(refreshToken);
@@ -62,9 +84,11 @@ export class AuthService {
   }
 
   async register(registerDto: RegisterDto) {
+    const normalized = this.normalizeRegisterDto(registerDto);
+
     const existingUser = await this.prisma.user.findUnique({
       where: {
-        email: registerDto.email,
+        email: normalized.email,
       },
     });
 
@@ -76,11 +100,11 @@ export class AuthService {
 
     const user = await this.prisma.user.create({
       data: {
-        email: registerDto.email,
+        email: normalized.email,
         password: hashedPassword,
-        firstName: registerDto.firstName,
-        lastName: registerDto.lastName,
-        phone: registerDto.phone,
+        firstName: normalized.firstName,
+        lastName: normalized.lastName,
+        phone: normalized.phone,
         role: UserRole.SCHOOL_ADMIN,
       },
     });
@@ -210,9 +234,11 @@ export class AuthService {
   }
 
   async login(loginDto: LoginDto) {
+    const email = this.resolveLoginEmail(loginDto);
+
     const existingUser = await this.prisma.user.findUnique({
       where: {
-        email: loginDto.email,
+        email,
       },
     });
 

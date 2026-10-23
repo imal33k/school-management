@@ -1,4 +1,4 @@
-import {
+﻿import {
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -19,12 +19,14 @@ import { UpdateTeacherDto } from './dto/update-teacher.dto';
 import * as bcrypt from 'bcrypt';
 import { PlanLimitService } from '../plans/plan-limit.service';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { AuditLogService } from '../audit-log/audit-log.service';
 
 @Injectable()
 export class TeacherService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly planLimits: PlanLimitService,
+    private readonly auditLog: AuditLogService,
   ) {}
 
   private ensureAdmin(user: RequestUser) {
@@ -36,6 +38,20 @@ export class TeacherService {
         'Only school administrators can manage teachers',
       );
     }
+  }
+
+  private ensureSelfOrAdmin(user: RequestUser, teacherUserId: string) {
+    if (
+      user.role !== UserRole.SCHOOL_ADMIN &&
+      user.role !== UserRole.SUPER_ADMIN &&
+      user.id !== teacherUserId
+    ) {
+      throw new ForbiddenException(
+        'You do not have permission to access this teacher',
+      );
+    }
+
+    return teacherUserId;
   }
 
   private async getMembership(user: RequestUser) {
@@ -95,59 +111,58 @@ export class TeacherService {
       }
     }
 
-    const temporaryPassword =
-      Math.random().toString(36).slice(-10);
+    const temporaryPassword = Math.random().toString(36).slice(-10);
+    const hashedPassword = await bcrypt.hash(temporaryPassword, 10);
 
-    const hashedPassword =
-      await bcrypt.hash(
-        temporaryPassword,
-        10,
-      );
-
-    const teacher =
-      await this.prisma.$transaction(
-        async (tx) => {
-          const teacherUser =
-            await tx.user.create({
-              data: {
-                email:
-                  dto.email ??
-                  `${dto.employeeId}@teacher.local`,
-                firstName: dto.firstName,
-                lastName: dto.lastName,
-                phone: dto.phone,
-                password: hashedPassword,
-                role: UserRole.TEACHER,
-              },
-            });
-
-          await tx.schoolMembership.create({
-            data: {
-              userId: teacherUser.id,
-              schoolId: membership.schoolId,
-              role: UserRole.TEACHER,
-            },
-          });
-
-          return tx.teacher.create({
-            data: {
-              schoolId:
-                membership.schoolId,
-              userId: teacherUser.id,
-              employeeId:
-                dto.employeeId,
-              firstName:
-                dto.firstName,
-              lastName:
-                dto.lastName,
-              email: dto.email,
-              phone: dto.phone,
-              address: dto.address,
-              photoUrl: dto.photoUrl,
-            },
-          });
+    const teacher = await this.prisma.$transaction(async (tx) => {
+      const teacherUser = await tx.user.create({
+        data: {
+          email: dto.email ?? `${dto.employeeId}@teacher.local`,
+          firstName: dto.firstName,
+          lastName: dto.lastName,
+          phone: dto.phone,
+          password: hashedPassword,
+          role: UserRole.TEACHER,
         },
-      );
+      });
+
+      await tx.schoolMembership.create({
+        data: {
+          userId: teacherUser.id,
+          schoolId: membership.schoolId,
+          role: UserRole.TEACHER,
+        },
+      });
+
+      const createdTeacher = await tx.teacher.create({
+        data: {
+          schoolId: membership.schoolId,
+          userId: teacherUser.id,
+          employeeId: dto.employeeId,
+          firstName: dto.firstName,
+          lastName: dto.lastName,
+          email: dto.email,
+          phone: dto.phone,
+          address: dto.address,
+          photoUrl: dto.photoUrl,
+        },
+      });
+
+      await this.auditLog.create({
+        schoolId: membership.schoolId,
+        userId: user.id,
+        action: 'teacher.created',
+        resource: 'Teacher',
+        resourceId: createdTeacher.id,
+        metadata: {
+          teacherId: createdTeacher.id,
+          employeeId: dto.employeeId,
+          createdBy: user.id,
+        },
+      });
+
+      return createdTeacher;
+    });
 
     return {
       teacher,
@@ -155,29 +170,62 @@ export class TeacherService {
     };
   }
 
-
   async resetPassword(user: RequestUser, id: string) {
     this.ensureAdmin(user);
     const membership = await this.getMembership(user);
-    const teacher = await this.prisma.teacher.findFirst({ where: { id, schoolId: membership.schoolId }, include: { user: true } });
-    if (!teacher) throw new NotFoundException('Teacher not found');
+    const teacher = await this.prisma.teacher.findFirst({
+      where: { id, schoolId: membership.schoolId },
+      include: { user: true },
+    });
+
+    if (!teacher) {
+      throw new NotFoundException('Teacher not found');
+    }
+
     const temporaryPassword = Math.random().toString(36).slice(-10);
-    await this.prisma.user.update({ where: { id: teacher.userId }, data: { password: await bcrypt.hash(temporaryPassword, 10) } });
+    await this.prisma.user.update({
+      where: { id: teacher.userId },
+      data: { password: await bcrypt.hash(temporaryPassword, 10) },
+    });
+
+    await this.auditLog.create({
+      schoolId: membership.schoolId,
+      userId: user.id,
+      action: 'teacher.password_reset',
+      resource: 'Teacher',
+      resourceId: teacher.id,
+      metadata: {
+        teacherId: teacher.id,
+        targetUserId: teacher.userId,
+      },
+    });
+
     return { message: 'Teacher password reset successfully', temporaryPassword };
   }
 
   async findAll(user: RequestUser, query: PaginationQueryDto = new PaginationQueryDto()) {
-    const membership =
-      await this.getMembership(user);
+    this.ensureAdmin(user);
 
-    const where: any = { schoolId: membership.schoolId, ...(query.search ? { OR: [
-      { firstName: { contains: query.search, mode: 'insensitive' } },
-      { lastName: { contains: query.search, mode: 'insensitive' } },
-      { employeeId: { contains: query.search, mode: 'insensitive' } },
-      { email: { contains: query.search, mode: 'insensitive' } },
-    ] } : {}) };
-    const page = query.getPage(); const limit = query.getLimit();
-    const result = await this.prisma.teacher.findMany({ where,
+    const membership = await this.getMembership(user);
+
+    const where: any = {
+      schoolId: membership.schoolId,
+      ...(query.search
+        ? {
+            OR: [
+              { firstName: { contains: query.search, mode: 'insensitive' } },
+              { lastName: { contains: query.search, mode: 'insensitive' } },
+              { employeeId: { contains: query.search, mode: 'insensitive' } },
+              { email: { contains: query.search, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const page = query.getPage();
+    const limit = query.getLimit();
+    const result = await this.prisma.teacher.findMany({
+      where,
       include: {
         user: {
           select: {
@@ -201,53 +249,62 @@ export class TeacherService {
       orderBy: { lastName: 'asc' },
       ...(query.paginated ? { skip: (page - 1) * limit, take: limit } : {}),
     });
-    if (!query.paginated) return result;
+
+    if (!query.paginated) {
+      return result;
+    }
+
     const total = await this.prisma.teacher.count({ where });
-    return { data: result, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+    return {
+      data: result,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
-  async findOne(
-    user: RequestUser,
-    id: string,
-  ) {
-    const membership =
-      await this.getMembership(user);
+  async findOne(user: RequestUser, id: string) {
+    const membership = await this.getMembership(user);
 
-    const teacher =
-      await this.prisma.teacher.findFirst({
-        where: {
-          id,
-          schoolId: membership.schoolId,
+    const teacher = await this.prisma.teacher.findFirst({
+      where: {
+        id,
+        schoolId: membership.schoolId,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            role: true,
+            status: true,
+          },
         },
-        include: {
-          user: {
-            select: {
-              id: true,
-              email: true,
-              role: true,
-              status: true,
-            },
+        classAssignments: {
+          include: {
+            class: true,
           },
-          classAssignments: {
-            include: {
-              class: true,
-            },
-          },
-          subjectAssignments: {
-            include: {
-              subject: true,
-            },
-          },
-          attendanceRecords: true,
-          results: true,
-          timetableEntries: true,
         },
-      });
+        subjectAssignments: {
+          include: {
+            subject: true,
+          },
+        },
+        attendanceRecords: true,
+        results: true,
+        timetableEntries: true,
+      },
+    });
 
     if (!teacher) {
-      throw new NotFoundException(
-        'Teacher not found',
-      );
+      throw new NotFoundException('Teacher not found');
+    }
+
+    if (user.role === UserRole.TEACHER && teacher.userId !== user.id) {
+      throw new ForbiddenException('You can only view your own teacher profile');
     }
 
     return teacher;
@@ -258,29 +315,39 @@ export class TeacherService {
     id: string,
     dto: UpdateTeacherDto,
   ) {
-    this.ensureAdmin(user);
+    const membership = await this.getMembership(user);
 
-    const membership =
-      await this.getMembership(user);
-
-    const teacher =
-      await this.prisma.teacher.findFirst({
-        where: {
-          id,
-          schoolId: membership.schoolId,
-        },
-      });
+    const teacher = await this.prisma.teacher.findFirst({
+      where: {
+        id,
+        schoolId: membership.schoolId,
+      },
+    });
 
     if (!teacher) {
-      throw new NotFoundException(
-        'Teacher not found',
-      );
+      throw new NotFoundException('Teacher not found');
     }
 
-    if (
-      dto.employeeId &&
-      dto.employeeId !== teacher.employeeId
-    ) {
+    if (user.role === UserRole.TEACHER && teacher.userId !== user.id) {
+      throw new ForbiddenException('You can only update your own teacher profile');
+    }
+
+    if (user.role === UserRole.TEACHER) {
+      const restrictedFields = [
+        dto.firstName,
+        dto.lastName,
+        dto.employeeId,
+        dto.email,
+      ].filter((value) => value !== undefined && value !== null);
+
+      if (restrictedFields.length > 0) {
+        throw new ForbiddenException(
+          'Teachers can only update their contact information',
+        );
+      }
+    }
+
+    if (dto.employeeId && dto.employeeId !== teacher.employeeId) {
       const existingTeacher =
         await this.prisma.teacher.findFirst({
           where: {
@@ -299,71 +366,79 @@ export class TeacherService {
       }
     }
 
-    if (
-      dto.email &&
-      dto.email !== teacher.email
-    ) {
-      const existingUser =
-        await this.prisma.user.findUnique({
-          where: {
-            email: dto.email,
-          },
-        });
+    if (dto.email && dto.email !== teacher.email) {
+      const existingUser = await this.prisma.user.findUnique({
+        where: {
+          email: dto.email,
+        },
+      });
 
-      if (
-        existingUser &&
-        existingUser.id !== teacher.userId
-      ) {
+      if (existingUser && existingUser.id !== teacher.userId) {
         throw new ConflictException(
           'A user with this email already exists',
         );
       }
     }
 
-    return this.prisma.$transaction(
-      async (tx) => {
-        const updatedTeacher =
-          await tx.teacher.update({
-            where: {
-              id,
-            },
-            data: {
-              firstName:
-                dto.firstName,
-              lastName:
-                dto.lastName,
-              employeeId:
-                dto.employeeId,
-              email:
-                dto.email,
-              phone:
-                dto.phone,
-              address:
-                dto.address,
-              photoUrl:
-                dto.photoUrl,
-            },
-          });
+    const teacherUpdateData = {
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      employeeId: dto.employeeId,
+      email: dto.email,
+      phone: dto.phone,
+      address: dto.address,
+      photoUrl: dto.photoUrl,
+    };
 
-        await tx.user.update({
-          where: {
-            id: teacher.userId,
-          },
-          data: {
-            email:
-              dto.email,
-            firstName:
-              dto.firstName,
-            lastName:
-              dto.lastName,
-            phone:
-              dto.phone,
-          },
-        });
+    const userUpdateData: {
+      email?: string | null;
+      firstName?: string;
+      lastName?: string;
+      phone?: string | null;
+    } = {
+      email: dto.email,
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+      phone: dto.phone,
+    };
 
-        return updatedTeacher;
-      },
+    const filteredTeacherUpdateData = Object.fromEntries(
+      Object.entries(teacherUpdateData).filter(([, value]) => value !== undefined),
     );
+
+    const filteredUserUpdateData = Object.fromEntries(
+      Object.entries(userUpdateData).filter(([, value]) => value !== undefined),
+    );
+
+    const updatedTeacher = await this.prisma.$transaction(async (tx) => {
+      const result = await tx.teacher.update({
+        where: { id },
+        data: filteredTeacherUpdateData,
+      });
+
+      if (Object.keys(filteredUserUpdateData).length > 0) {
+        await tx.user.update({
+          where: { id: teacher.userId },
+          data: filteredUserUpdateData,
+        });
+      }
+
+      await this.auditLog.create({
+        schoolId: membership.schoolId,
+        userId: user.id,
+        action: 'teacher.updated',
+        resource: 'Teacher',
+        resourceId: teacher.id,
+        metadata: {
+          teacherId: teacher.id,
+          updatedFields: Object.keys(filteredTeacherUpdateData),
+        },
+      });
+
+      return result;
+    });
+
+    return updatedTeacher;
   }
 
   async remove(
@@ -372,27 +447,35 @@ export class TeacherService {
   ) {
     this.ensureAdmin(user);
 
-    const membership =
-      await this.getMembership(user);
+    const membership = await this.getMembership(user);
 
-    const teacher =
-      await this.prisma.teacher.findFirst({
-        where: {
-          id,
-          schoolId: membership.schoolId,
-        },
-      });
-
-    if (!teacher) {
-      throw new NotFoundException(
-        'Teacher not found',
-      );
-    }
-
-    await this.prisma.teacher.delete({
+    const teacher = await this.prisma.teacher.findFirst({
       where: {
         id,
+        schoolId: membership.schoolId,
       },
+    });
+
+    if (!teacher) {
+      throw new NotFoundException('Teacher not found');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.teacher.delete({
+        where: { id },
+      });
+
+      await this.auditLog.create({
+        schoolId: membership.schoolId,
+        userId: user.id,
+        action: 'teacher.deleted',
+        resource: 'Teacher',
+        resourceId: teacher.id,
+        metadata: {
+          teacherId: teacher.id,
+          userId: teacher.userId,
+        },
+      });
     });
 
     return {

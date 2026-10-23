@@ -38,9 +38,8 @@ model School {
 
 model User {
   id                   String                  @id @default(uuid())
-  email                String                  @unique
-  firstName            String
-  lastName             String
+  schoolemail                String                  @unique
+  schoolName            String
   phone                String?
   role                 UserRole
   status               UserStatus              @default(ACTIVE)
