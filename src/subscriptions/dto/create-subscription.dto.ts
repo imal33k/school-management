@@ -1,8 +1,4 @@
-import {
-  IsDateString,
-  IsOptional,
-  IsUUID,
-} from 'class-validator';
+import { IsDateString, IsOptional, IsUUID } from 'class-validator';
 
 export class CreateSubscriptionDto {
   @IsUUID()
@@ -12,9 +8,11 @@ export class CreateSubscriptionDto {
   @IsUUID()
   schoolId?: string;
 
+  @IsOptional()
   @IsDateString()
-  startDate!: string;
+  startDate?: string;
 
+  @IsOptional()
   @IsDateString()
-  endDate!: string;
+  endDate?: string;
 }

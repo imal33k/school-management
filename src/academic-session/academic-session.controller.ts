@@ -1,15 +1,5 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Patch,
-  Post,
-} from '@nestjs/common';
-
+import {Body,Controller,Delete,Get,Param,Patch,Post} from '@nestjs/common';
 import { AcademicSessionService } from './academic-session.service';
-
 import { CreateAcademicSessionDto } from './dto/create-academic-session.dto';
 import { UpdateAcademicSessionDto } from './dto/update-academic-session.dto';
 

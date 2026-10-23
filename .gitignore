@@ -2,6 +2,9 @@
 /dist
 /node_modules
 /build
+/frontend/dist
+/frontend/node_modules
+/frontend/*.tsbuildinfo
 
 # Logs
 logs

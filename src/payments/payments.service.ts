@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -6,13 +7,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import {
-  InvoiceStatus,
-  PaymentStatus,
-  Prisma,
-  UserRole,
-} from '@prisma/client';
-import { createHmac } from 'crypto';
+import { InvoiceStatus, PaymentStatus, Prisma, UserRole } from '@prisma/client';
+import { createHmac, timingSafeEqual } from 'crypto';
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import { PaystackService } from './paystack.service';
@@ -32,28 +28,21 @@ export class PaymentsService {
     private readonly paystack: PaystackService,
   ) {}
 
-  private async getSchoolId(
-    user: RequestUser,
-  ): Promise<string> {
-    const membership =
-      await this.prisma.schoolMembership.findFirst({
-        where: {
-          userId: user.id,
-        },
-      });
+  private async getSchoolId(user: RequestUser): Promise<string> {
+    const membership = await this.prisma.schoolMembership.findFirst({
+      where: {
+        userId: user.id,
+      },
+    });
 
     if (!membership) {
-      throw new ForbiddenException(
-        'You are not a member of any school',
-      );
+      throw new ForbiddenException('You are not a member of any school');
     }
 
     return membership.schoolId;
   }
 
-  private ensureCanManage(
-    user: RequestUser,
-  ) {
+  private ensureCanManage(user: RequestUser) {
     const allowedRoles: UserRole[] = [
       UserRole.SUPER_ADMIN,
       UserRole.SCHOOL_ADMIN,
@@ -69,136 +58,291 @@ export class PaymentsService {
 
   private generateReference(): string {
     const timestamp = Date.now();
-    const random = Math.random()
-      .toString(36)
-      .substring(2, 10)
-      .toUpperCase();
+    const random = Math.random().toString(36).substring(2, 10).toUpperCase();
 
     return `PAY-${timestamp}-${random}`;
   }
 
-
   async initializePaystack(dto: InitializePaymentDto, user: RequestUser) {
     const schoolId = await this.getSchoolId(user);
-    const student = await this.prisma.student.findFirst({ where: { id: dto.studentId, schoolId } });
+    const student = await this.prisma.student.findFirst({
+      where: { id: dto.studentId, schoolId },
+    });
     if (!student) throw new NotFoundException('Student not found');
     let amount: number;
     let invoiceId = dto.invoiceId;
     if (invoiceId) {
-      const invoice = await this.prisma.invoice.findFirst({ where: { id: invoiceId, schoolId, studentId: student.id } });
-      if (!invoice) throw new NotFoundException('Invoice not found for this student');
-      if (invoice.status === InvoiceStatus.CANCELLED || invoice.status === InvoiceStatus.PAID) throw new BadRequestException('This invoice cannot accept a payment');
+      const invoice = await this.prisma.invoice.findFirst({
+        where: { id: invoiceId, schoolId, studentId: student.id },
+      });
+      if (!invoice)
+        throw new NotFoundException('Invoice not found for this student');
+      if (
+        invoice.status === InvoiceStatus.CANCELLED ||
+        invoice.status === InvoiceStatus.PAID
+      )
+        throw new BadRequestException('This invoice cannot accept a payment');
       amount = Number(invoice.amount) - Number(invoice.amountPaid);
-      if (amount <= 0) throw new BadRequestException('Invoice has no outstanding balance');
+      if (amount <= 0)
+        throw new BadRequestException('Invoice has no outstanding balance');
     } else {
-      throw new BadRequestException('invoiceId is required for Paystack school payments');
+      throw new BadRequestException(
+        'invoiceId is required for Paystack school payments',
+      );
     }
     const reference = this.generateReference();
-    const payment = await this.prisma.payment.create({ data: { schoolId, studentId: student.id, invoiceId, reference, amount: new Prisma.Decimal(amount), status: PaymentStatus.PENDING, provider: 'PAYSTACK', metadata: { method: 'paystack' } } });
+    const payment = await this.prisma.payment.create({
+      data: {
+        schoolId,
+        studentId: student.id,
+        invoiceId,
+        reference,
+        amount: new Prisma.Decimal(amount),
+        status: PaymentStatus.PENDING,
+        provider: 'PAYSTACK',
+        metadata: { method: 'paystack' },
+      },
+    });
     try {
-      const data = await this.paystack.initialize({ email: student.email || user.email, amount, reference, callbackUrl: dto.callbackUrl, metadata: { paymentId: payment.id, schoolId, studentId: student.id, invoiceId } });
-      return { payment, authorizationUrl: data.authorization_url, accessCode: data.access_code, reference: data.reference };
+      const data = await this.paystack.initialize({
+        email: student.email || user.email,
+        amount,
+        reference,
+        callbackUrl: dto.callbackUrl,
+        metadata: {
+          paymentId: payment.id,
+          schoolId,
+          studentId: student.id,
+          invoiceId,
+        },
+      });
+      return {
+        payment,
+        authorizationUrl: data.authorization_url,
+        accessCode: data.access_code,
+        reference: data.reference,
+      };
     } catch (error) {
-      await this.prisma.payment.update({ where: { id: payment.id }, data: { status: PaymentStatus.FAILED } });
+      await this.prisma.payment.update({
+        where: { id: payment.id },
+        data: { status: PaymentStatus.FAILED },
+      });
       throw error;
     }
   }
 
   async verifyPaystack(reference: string, user: RequestUser) {
     const schoolId = await this.getSchoolId(user);
-    const payment = await this.prisma.payment.findFirst({ where: { reference, schoolId } });
+    const payment = await this.prisma.payment.findFirst({
+      where: { reference, schoolId },
+    });
     if (!payment) throw new NotFoundException('Payment not found');
-    const data: any = await this.paystack.verify(reference);
+    const data = await this.paystack.verify(reference);
+    if (data.reference !== reference) {
+      throw new BadGatewayException(
+        'Paystack verification returned a different payment reference',
+      );
+    }
     return this.applyPaystackPayment(data);
   }
 
   async handleWebhook(req: RawBodyRequest<Request>) {
-    const signature = req.headers['x-paystack-signature'];
+    const signatureHeader = req.headers['x-paystack-signature'];
+    const signature = Array.isArray(signatureHeader)
+      ? signatureHeader[0]
+      : signatureHeader;
     const rawBody = req.rawBody;
-    if (!signature || !rawBody || !process.env.PAYSTACK_SECRET_KEY) throw new BadRequestException('Invalid Paystack webhook');
-    const expected = createHmac('sha512', process.env.PAYSTACK_SECRET_KEY).update(rawBody).digest('hex');
-    if (expected !== String(signature)) throw new ForbiddenException('Invalid Paystack signature');
+    if (!signature || !rawBody || !process.env.PAYSTACK_SECRET_KEY)
+      throw new BadRequestException('Invalid Paystack webhook');
+    const expected = createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+      .update(rawBody)
+      .digest('hex');
+    const expectedBuffer = Buffer.from(expected, 'hex');
+    const signatureBuffer = Buffer.from(signature, 'hex');
+    if (
+      signatureBuffer.length !== expectedBuffer.length ||
+      !timingSafeEqual(signatureBuffer, expectedBuffer)
+    )
+      throw new ForbiddenException('Invalid Paystack signature');
     const event: any = req.body;
-    if (event?.event === 'charge.success' && event.data?.reference) await this.applyPaystackPayment(event.data);
+    if (
+      ['charge.success', 'charge.failed'].includes(event?.event) &&
+      event.data?.reference
+    )
+      await this.applyPaystackPayment(event.data);
     return { received: true };
   }
 
   private async applyPaystackPayment(data: any) {
     const reference = data.reference;
-    const payment = await this.prisma.payment.findUnique({ where: { reference } });
+    const payment = await this.prisma.payment.findUnique({
+      where: { reference },
+    });
     if (!payment) {
-      const subscriptionPayment = await this.prisma.subscriptionPayment.findUnique({ where: { reference } });
+      const subscriptionPayment =
+        await this.prisma.subscriptionPayment.findUnique({
+          where: { reference },
+        });
       if (!subscriptionPayment) return { ignored: true };
-      const successful = data.status === 'success' && data.gateway_response !== 'Declined';
-      if (successful && Number(data.amount) / 100 + 0.001 < Number(subscriptionPayment.amount)) throw new BadRequestException('Paystack amount does not match subscription payment amount');
-      return this.prisma.$transaction(async tx => {
-        const updated = await tx.subscriptionPayment.update({ where: { id: subscriptionPayment.id }, data: { status: successful ? PaymentStatus.SUCCESSFUL : PaymentStatus.FAILED, paidAt: successful ? new Date() : undefined, metadata: data as Prisma.InputJsonValue } });
-        if (successful) await tx.subscription.update({ where: { id: subscriptionPayment.subscriptionId }, data: { status: 'ACTIVE', startDate: new Date(), cancelledAt: null } });
-        return updated;
+      const successful =
+        data.status === 'success' && data.gateway_response !== 'Declined';
+      if (
+        successful &&
+        Number(data.amount) !==
+          Math.round(Number(subscriptionPayment.amount) * 100)
+      )
+        throw new BadRequestException(
+          'Paystack amount does not match subscription payment amount',
+        );
+      return this.prisma.$transaction(async (tx) => {
+        const changed = await tx.subscriptionPayment.updateMany({
+          where: {
+            id: subscriptionPayment.id,
+            status: { not: PaymentStatus.SUCCESSFUL },
+          },
+          data: {
+            status: successful
+              ? PaymentStatus.SUCCESSFUL
+              : PaymentStatus.FAILED,
+            paidAt: successful ? new Date() : undefined,
+            metadata: data as Prisma.InputJsonValue,
+          },
+        });
+        if (!changed.count) {
+          return tx.subscriptionPayment.findUniqueOrThrow({
+            where: { id: subscriptionPayment.id },
+          });
+        }
+
+        if (successful) {
+          const subscription = await tx.subscription.findUniqueOrThrow({
+            where: { id: subscriptionPayment.subscriptionId },
+            include: { plan: true },
+          });
+          const metadata = subscriptionPayment.metadata;
+          const targetPlanId =
+            metadata &&
+            typeof metadata === 'object' &&
+            !Array.isArray(metadata) &&
+            'targetPlanId' in metadata &&
+            typeof metadata.targetPlanId === 'string'
+              ? metadata.targetPlanId
+              : subscription.planId;
+          const targetPlan =
+            targetPlanId === subscription.planId
+              ? subscription.plan
+              : await tx.plan.findUniqueOrThrow({
+                  where: { id: targetPlanId },
+                });
+          const now = new Date();
+          const periodStart =
+            subscription.status === 'ACTIVE' && subscription.endDate > now
+              ? subscription.endDate
+              : now;
+          const months =
+            targetPlan.billingInterval === 'MONTHLY'
+              ? 1
+              : targetPlan.billingInterval === 'TERMLY'
+                ? 3
+                : 12;
+          const periodEnd = this.addUtcMonths(periodStart, months);
+          await tx.subscription.update({
+            where: { id: subscription.id },
+            data: {
+              planId: targetPlan.id,
+              status: 'ACTIVE',
+              startDate: periodStart,
+              endDate: periodEnd,
+              cancelledAt: null,
+            },
+          });
+        }
+
+        return tx.subscriptionPayment.findUniqueOrThrow({
+          where: { id: subscriptionPayment.id },
+        });
       });
     }
-    const successful = data.status === 'success' && data.gateway_response !== 'Declined';
+    const successful =
+      data.status === 'success' && data.gateway_response !== 'Declined';
     const status = successful ? PaymentStatus.SUCCESSFUL : PaymentStatus.FAILED;
-    if (status === PaymentStatus.SUCCESSFUL && Number(data.amount) / 100 + 0.001 < Number(payment.amount)) throw new BadRequestException('Paystack amount does not match payment amount');
-    return this.prisma.$transaction(async tx => {
-      const updated = await tx.payment.update({ where: { id: payment.id }, data: { status, paidAt: successful ? new Date() : undefined, metadata: data as Prisma.InputJsonValue }, include: { student: true, invoice: true } });
-      if (payment.invoiceId && successful) await this.updateInvoiceAfterPayment(tx, payment.invoiceId, PaymentStatus.SUCCESSFUL);
+    if (
+      status === PaymentStatus.SUCCESSFUL &&
+      Number(data.amount) !== Math.round(Number(payment.amount) * 100)
+    )
+      throw new BadRequestException(
+        'Paystack amount does not match payment amount',
+      );
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          status,
+          paidAt: successful ? new Date() : undefined,
+          metadata: data as Prisma.InputJsonValue,
+        },
+        include: { student: true, invoice: true },
+      });
+      if (payment.invoiceId && successful)
+        await this.updateInvoiceAfterPayment(
+          tx,
+          payment.invoiceId,
+          PaymentStatus.SUCCESSFUL,
+        );
       return updated;
     });
   }
 
-  async create(
-    dto: CreatePaymentDto,
-    user: RequestUser,
-  ) {
+  private addUtcMonths(date: Date, months: number) {
+    const result = new Date(date);
+    const day = result.getUTCDate();
+    result.setUTCDate(1);
+    result.setUTCMonth(result.getUTCMonth() + months);
+    const finalDay = new Date(
+      Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0),
+    ).getUTCDate();
+    result.setUTCDate(Math.min(day, finalDay));
+    return result;
+  }
+
+  async create(dto: CreatePaymentDto, user: RequestUser) {
     this.ensureCanManage(user);
 
-    const schoolId =
-      await this.getSchoolId(user);
+    const schoolId = await this.getSchoolId(user);
 
-    const student =
-      await this.prisma.student.findFirst({
-        where: {
-          id: dto.studentId,
-          schoolId,
-        },
-      });
+    const student = await this.prisma.student.findFirst({
+      where: {
+        id: dto.studentId,
+        schoolId,
+      },
+    });
 
     if (!student) {
-      throw new NotFoundException(
-        'Student not found',
-      );
+      throw new NotFoundException('Student not found');
     }
 
     let invoice = null;
 
     if (dto.invoiceId) {
-      invoice =
-        await this.prisma.invoice.findFirst({
-          where: {
-            id: dto.invoiceId,
-            schoolId,
-            studentId: dto.studentId,
-          },
-        });
+      invoice = await this.prisma.invoice.findFirst({
+        where: {
+          id: dto.invoiceId,
+          schoolId,
+          studentId: dto.studentId,
+        },
+      });
 
       if (!invoice) {
-        throw new NotFoundException(
-          'Invoice not found for this student',
-        );
+        throw new NotFoundException('Invoice not found for this student');
       }
 
-      if (
-        invoice.status === InvoiceStatus.CANCELLED
-      ) {
+      if (invoice.status === InvoiceStatus.CANCELLED) {
         throw new BadRequestException(
           'Cannot make a payment against a cancelled invoice',
         );
       }
 
-      const outstanding =
-        Number(invoice.amount) -
-        Number(invoice.amountPaid);
+      const outstanding = Number(invoice.amount) - Number(invoice.amountPaid);
 
       if (dto.amount > outstanding) {
         throw new BadRequestException(
@@ -207,19 +351,15 @@ export class PaymentsService {
       }
     }
 
-    const reference =
-      this.generateReference();
+    const reference = this.generateReference();
 
     let metadata: Prisma.InputJsonValue | undefined;
 
     if (dto.metadata) {
       try {
-        metadata =
-          JSON.parse(dto.metadata);
+        metadata = JSON.parse(dto.metadata);
       } catch {
-        throw new BadRequestException(
-          'metadata must contain valid JSON',
-        );
+        throw new BadRequestException('metadata must contain valid JSON');
       }
     }
 
@@ -229,9 +369,7 @@ export class PaymentsService {
         studentId: dto.studentId,
         invoiceId: dto.invoiceId,
         reference,
-        amount: new Prisma.Decimal(
-          dto.amount,
-        ),
+        amount: new Prisma.Decimal(dto.amount),
         status: PaymentStatus.PENDING,
         provider: 'INTERNAL',
         metadata,
@@ -244,14 +382,21 @@ export class PaymentsService {
   }
 
   async findAll(
-    user: RequestUser, query: PaginationQueryDto = new PaginationQueryDto(),
+    user: RequestUser,
+    query: PaginationQueryDto = new PaginationQueryDto(),
   ) {
-    const schoolId =
-      await this.getSchoolId(user);
+    const schoolId = await this.getSchoolId(user);
 
-    const where: any = { schoolId, ...(query.search ? { reference: { contains: query.search, mode: 'insensitive' } } : {}) };
-    const page = query.getPage(); const limit = query.getLimit();
-    const result = await this.prisma.payment.findMany({ where,
+    const where: any = {
+      schoolId,
+      ...(query.search
+        ? { reference: { contains: query.search, mode: 'insensitive' } }
+        : {}),
+    };
+    const page = query.getPage();
+    const limit = query.getLimit();
+    const result = await this.prisma.payment.findMany({
+      where,
       include: {
         student: true,
         invoice: true,
@@ -261,28 +406,24 @@ export class PaymentsService {
     });
     if (!query.paginated) return result;
     const total = await this.prisma.payment.count({ where });
-    return { data: result, meta: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+    return {
+      data: result,
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
   }
 
-  async findByStudent(
-    studentId: string,
-    user: RequestUser,
-  ) {
-    const schoolId =
-      await this.getSchoolId(user);
+  async findByStudent(studentId: string, user: RequestUser) {
+    const schoolId = await this.getSchoolId(user);
 
-    const student =
-      await this.prisma.student.findFirst({
-        where: {
-          id: studentId,
-          schoolId,
-        },
-      });
+    const student = await this.prisma.student.findFirst({
+      where: {
+        id: studentId,
+        schoolId,
+      },
+    });
 
     if (!student) {
-      throw new NotFoundException(
-        'Student not found',
-      );
+      throw new NotFoundException('Student not found');
     }
 
     return this.prisma.payment.findMany({
@@ -299,25 +440,18 @@ export class PaymentsService {
     });
   }
 
-  async findByInvoice(
-    invoiceId: string,
-    user: RequestUser,
-  ) {
-    const schoolId =
-      await this.getSchoolId(user);
+  async findByInvoice(invoiceId: string, user: RequestUser) {
+    const schoolId = await this.getSchoolId(user);
 
-    const invoice =
-      await this.prisma.invoice.findFirst({
-        where: {
-          id: invoiceId,
-          schoolId,
-        },
-      });
+    const invoice = await this.prisma.invoice.findFirst({
+      where: {
+        id: invoiceId,
+        schoolId,
+      },
+    });
 
     if (!invoice) {
-      throw new NotFoundException(
-        'Invoice not found',
-      );
+      throw new NotFoundException('Invoice not found');
     }
 
     return this.prisma.payment.findMany({
@@ -334,29 +468,22 @@ export class PaymentsService {
     });
   }
 
-  async findOne(
-    id: string,
-    user: RequestUser,
-  ) {
-    const schoolId =
-      await this.getSchoolId(user);
+  async findOne(id: string, user: RequestUser) {
+    const schoolId = await this.getSchoolId(user);
 
-    const payment =
-      await this.prisma.payment.findFirst({
-        where: {
-          id,
-          schoolId,
-        },
-        include: {
-          student: true,
-          invoice: true,
-        },
-      });
+    const payment = await this.prisma.payment.findFirst({
+      where: {
+        id,
+        schoolId,
+      },
+      include: {
+        student: true,
+        invoice: true,
+      },
+    });
 
     if (!payment) {
-      throw new NotFoundException(
-        'Payment not found',
-      );
+      throw new NotFoundException('Payment not found');
     }
 
     return payment;
@@ -369,31 +496,21 @@ export class PaymentsService {
   ) {
     this.ensureCanManage(user);
 
-    const schoolId =
-      await this.getSchoolId(user);
+    const schoolId = await this.getSchoolId(user);
 
-    const payment =
-      await this.prisma.payment.findFirst({
-        where: {
-          id,
-          schoolId,
-        },
-      });
+    const payment = await this.prisma.payment.findFirst({
+      where: {
+        id,
+        schoolId,
+      },
+    });
 
     if (!payment) {
-      throw new NotFoundException(
-        'Payment not found',
-      );
+      throw new NotFoundException('Payment not found');
     }
 
-    if (
-      payment.status ===
-      PaymentStatus.SUCCESSFUL
-    ) {
-      if (
-        dto.status ===
-        PaymentStatus.PENDING
-      ) {
+    if (payment.status === PaymentStatus.SUCCESSFUL) {
+      if (dto.status === PaymentStatus.PENDING) {
         throw new ConflictException(
           'A successful payment cannot be changed back to pending',
         );
@@ -401,49 +518,39 @@ export class PaymentsService {
     }
 
     if (
-      payment.status ===
-        PaymentStatus.REFUNDED &&
-      dto.status !==
-        PaymentStatus.REFUNDED
+      payment.status === PaymentStatus.REFUNDED &&
+      dto.status !== PaymentStatus.REFUNDED
     ) {
       throw new ConflictException(
         'A refunded payment cannot be changed to another status',
       );
     }
 
-    return this.prisma.$transaction(
-      async (tx) => {
-        const updatedPayment =
-          await tx.payment.update({
-            where: {
-              id,
-            },
-            data: {
-              status: dto.status,
-              ...(dto.status ===
-              PaymentStatus.SUCCESSFUL
-                ? {
-                    paidAt: new Date(),
-                  }
-                : {}),
-            },
-            include: {
-              student: true,
-              invoice: true,
-            },
-          });
+    return this.prisma.$transaction(async (tx) => {
+      const updatedPayment = await tx.payment.update({
+        where: {
+          id,
+        },
+        data: {
+          status: dto.status,
+          ...(dto.status === PaymentStatus.SUCCESSFUL
+            ? {
+                paidAt: new Date(),
+              }
+            : {}),
+        },
+        include: {
+          student: true,
+          invoice: true,
+        },
+      });
 
-        if (payment.invoiceId) {
-          await this.updateInvoiceAfterPayment(
-            tx,
-            payment.invoiceId,
-            dto.status,
-          );
-        }
+      if (payment.invoiceId) {
+        await this.updateInvoiceAfterPayment(tx, payment.invoiceId, dto.status);
+      }
 
-        return updatedPayment;
-      },
-    );
+      return updatedPayment;
+    });
   }
 
   private async updateInvoiceAfterPayment(
@@ -451,49 +558,37 @@ export class PaymentsService {
     invoiceId: string,
     paymentStatus: PaymentStatus,
   ) {
-    const invoice =
-      await tx.invoice.findUnique({
-        where: {
-          id: invoiceId,
-        },
-      });
+    const invoice = await tx.invoice.findUnique({
+      where: {
+        id: invoiceId,
+      },
+    });
 
     if (!invoice) {
       return;
     }
 
-    const successfulPayments =
-      await tx.payment.findMany({
-        where: {
-          invoiceId,
-          status: PaymentStatus.SUCCESSFUL,
-        },
-      });
+    const successfulPayments = await tx.payment.findMany({
+      where: {
+        invoiceId,
+        status: PaymentStatus.SUCCESSFUL,
+      },
+    });
 
-    const amountPaid =
-      successfulPayments.reduce(
-        (total, payment) =>
-          total + Number(payment.amount),
-        0,
-      );
+    const amountPaid = successfulPayments.reduce(
+      (total, payment) => total + Number(payment.amount),
+      0,
+    );
 
-    let invoiceStatus: InvoiceStatus =
-      InvoiceStatus.UNPAID;
+    let invoiceStatus: InvoiceStatus = InvoiceStatus.UNPAID;
 
-    if (
-      amountPaid >= Number(invoice.amount)
-    ) {
-      invoiceStatus =
-        InvoiceStatus.PAID;
+    if (amountPaid >= Number(invoice.amount)) {
+      invoiceStatus = InvoiceStatus.PAID;
     } else if (amountPaid > 0) {
-      invoiceStatus =
-        InvoiceStatus.PARTIALLY_PAID;
+      invoiceStatus = InvoiceStatus.PARTIALLY_PAID;
     }
 
-    if (
-      invoice.status ===
-      InvoiceStatus.CANCELLED
-    ) {
+    if (invoice.status === InvoiceStatus.CANCELLED) {
       return;
     }
 
@@ -502,9 +597,7 @@ export class PaymentsService {
         id: invoiceId,
       },
       data: {
-        amountPaid: new Prisma.Decimal(
-          amountPaid,
-        ),
+        amountPaid: new Prisma.Decimal(amountPaid),
         status: invoiceStatus,
       },
     });

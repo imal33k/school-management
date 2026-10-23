@@ -150,3 +150,27 @@ npm run build
 ```
 
 The Paystack webhook endpoint is `POST /payments/webhook` and must be configured in the Paystack dashboard. It is signature-verified with the Paystack secret key.
+
+## SaaS account and subscription flows
+
+- School administrators can start one trial subscription with `POST /subscriptions`. The trial lasts 14 days by default; configure `TRIAL_PERIOD_DAYS` (1–90) to change it.
+- School features require an active, unexpired trial or subscription. Past-due, cancelled, expired, and unsubscribed schools retain access to subscription/billing endpoints only. Suspended schools require reactivation by a super admin.
+- `GET /plans/active` is public for pricing pages. School administrators can read their subscription payment history at `GET /subscriptions/me/payments`; super admins can use `GET /subscriptions/:id/payments`.
+- `POST /subscriptions/:id/pay` accepts an optional `planId` to pay for a plan change. A verified Paystack payment activates the plan and starts or extends its billing period.
+- Password recovery is available through `POST /auth/forgot-password` and `POST /auth/reset-password`. School staff invitations use `POST /school-membership/invitations` and `POST /school-membership/invitations/accept`.
+
+Set `APP_URL` to the web application origin used in recovery and invitation links. Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, and `MAIL_FROM` before using those email endpoints. Apply the new migration with `npx prisma migrate deploy` and regenerate the Prisma client with `npx prisma generate`.
+
+## Frontend
+
+The React/TypeScript frontend is in `frontend/` and uses the API routes and roles described above.
+
+```powershell
+cd frontend
+npm install
+Copy-Item .env.example .env
+# Set VITE_API_BASE_URL in .env to the backend URL (defaults to http://localhost:3000).
+npm run dev
+```
+
+Create a production build with `npm run build` from `frontend/`. The build output is generated in `frontend/dist`; compiled assets are not committed. The backend and frontend should be deployed separately, with the frontend's `VITE_API_BASE_URL` pointing to the deployed API.

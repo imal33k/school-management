@@ -1,0 +1,146 @@
+import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import {
+  SchoolStatus,
+  SubscriptionStatus,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
+import { JwtService } from '@nestjs/jwt';
+import { PrismaService } from '../../../prisma/prisma.service';
+import { JwtAuthGuard } from './jwt-auth.guard';
+import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+
+describe('JwtAuthGuard tenant access', () => {
+  const now = new Date();
+  const request = {
+    headers: { authorization: 'Bearer token' },
+    path: '/students',
+    method: 'GET',
+    user: undefined as unknown,
+  };
+  const jwt = {
+    verifyAsync: jest.fn().mockResolvedValue({ sub: 'user-1' }),
+  };
+  const reflector = {
+    getAllAndOverride: jest.fn().mockReturnValue(false),
+  };
+  const prisma = {
+    user: { findUnique: jest.fn() },
+    subscription: { updateMany: jest.fn() },
+  };
+  const guard = new JwtAuthGuard(
+    jwt as unknown as JwtService,
+    reflector as unknown as Reflector,
+    prisma as unknown as PrismaService,
+  );
+  const context = {
+    getHandler: jest.fn(),
+    getClass: jest.fn(),
+    switchToHttp: () => ({ getRequest: () => request }),
+  } as unknown as ExecutionContext;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    reflector.getAllAndOverride.mockReturnValue(false);
+    jwt.verifyAsync.mockResolvedValue({ sub: 'user-1' });
+    prisma.subscription.updateMany.mockResolvedValue({ count: 1 });
+    request.path = '/students';
+    request.method = 'GET';
+    request.user = undefined;
+  });
+
+  function setUser(
+    schoolStatus: SchoolStatus,
+    role: UserRole,
+    status: SubscriptionStatus | null,
+    endDate = new Date(now.getTime() + 86_400_000),
+    startDate = new Date(now.getTime() - 86_400_000),
+  ) {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-1',
+      email: 'admin@example.test',
+      role: UserRole.SCHOOL_ADMIN,
+      status: UserStatus.ACTIVE,
+      memberships: [
+        {
+          schoolId: 'school-1',
+          role,
+          school: {
+            status: schoolStatus,
+            subscription: status
+              ? { id: 'subscription-1', status, startDate, endDate }
+              : null,
+          },
+        },
+      ],
+    });
+  }
+
+  it('blocks suspended schools', async () => {
+    setUser(
+      SchoolStatus.SUSPENDED,
+      UserRole.SCHOOL_ADMIN,
+      SubscriptionStatus.ACTIVE,
+    );
+
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+
+  it('expires subscriptions and blocks school features', async () => {
+    setUser(
+      SchoolStatus.ACTIVE,
+      UserRole.SCHOOL_ADMIN,
+      SubscriptionStatus.ACTIVE,
+      new Date(now.getTime() - 1),
+    );
+
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { status: SubscriptionStatus.EXPIRED },
+      }),
+    );
+  });
+
+  it('allows billing recovery for expired tenants and uses the current membership role', async () => {
+    request.path = '/subscriptions/me';
+    setUser(
+      SchoolStatus.ACTIVE,
+      UserRole.ACCOUNTANT,
+      SubscriptionStatus.EXPIRED,
+      new Date(now.getTime() - 1),
+    );
+
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(request.user).toEqual(
+      expect.objectContaining({ role: UserRole.ACCOUNTANT }),
+    );
+  });
+
+  it('blocks tenants without a subscription from school features', async () => {
+    setUser(SchoolStatus.ACTIVE, UserRole.SCHOOL_ADMIN, null);
+
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+
+  it('blocks subscriptions that have not started yet', async () => {
+    setUser(
+      SchoolStatus.ACTIVE,
+      UserRole.SCHOOL_ADMIN,
+      SubscriptionStatus.TRIAL,
+      new Date(now.getTime() + 86_400_000),
+      new Date(now.getTime() + 60_000),
+    );
+
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+});

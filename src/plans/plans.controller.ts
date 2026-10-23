@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { Public } from '../auth/decorator/public.decorator';
 
 import { PlansService } from './plans.service';
 
@@ -15,49 +16,32 @@ import { UpdatePlanDto } from './dto/update-plan-status.dto';
 
 import {
   CurrentUser,
- type RequestUser,
+  type RequestUser,
 } from '../auth/decorator/current-user.decorator';
 
 @Controller('plans')
 export class PlansController {
-  constructor(
-    private readonly plansService: PlansService,
-  ) {}
+  constructor(private readonly plansService: PlansService) {}
 
   @Post()
-  create(
-    @Body() dto: CreatePlanDto,
-    @CurrentUser() user: RequestUser,
-  ) {
-    return this.plansService.create(
-      dto,
-      user,
-    );
+  create(@Body() dto: CreatePlanDto, @CurrentUser() user: RequestUser) {
+    return this.plansService.create(dto, user);
   }
 
   @Get()
-  findAll(
-    @CurrentUser() user: RequestUser,
-  ) {
-    return this.plansService.findAll(
-      user,
-    );
+  findAll(@CurrentUser() user: RequestUser) {
+    return this.plansService.findAll(user);
   }
 
   @Get('active')
+  @Public()
   findActivePlans() {
     return this.plansService.findActivePlans();
   }
 
   @Get(':id')
-  findOne(
-    @Param('id') id: string,
-    @CurrentUser() user: RequestUser,
-  ) {
-    return this.plansService.findOne(
-      id,
-      user,
-    );
+  findOne(@Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.plansService.findOne(id, user);
   }
 
   @Patch(':id')
@@ -66,11 +50,7 @@ export class PlansController {
     @Body() dto: UpdatePlanDto,
     @CurrentUser() user: RequestUser,
   ) {
-    return this.plansService.update(
-      id,
-      dto,
-      user,
-    );
+    return this.plansService.update(id, dto, user);
   }
 
   @Patch(':id/status')
@@ -79,21 +59,11 @@ export class PlansController {
     @Body() dto: UpdatePlanDto,
     @CurrentUser() user: RequestUser,
   ) {
-    return this.plansService.updateStatus(
-      id,
-      dto,
-      user,
-    );
+    return this.plansService.updateStatus(id, dto, user);
   }
 
   @Delete(':id')
-  remove(
-    @Param('id') id: string,
-    @CurrentUser() user: RequestUser,
-  ) {
-    return this.plansService.remove(
-      id,
-      user,
-    );
+  remove(@Param('id') id: string, @CurrentUser() user: RequestUser) {
+    return this.plansService.remove(id, user);
   }
 }
