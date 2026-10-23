@@ -20,6 +20,7 @@ import * as bcrypt from 'bcrypt';
 import { PlanLimitService } from '../plans/plan-limit.service';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
+import { EmailService } from '../common/email.service';
 
 @Injectable()
 export class TeacherService {
@@ -27,6 +28,7 @@ export class TeacherService {
     private readonly prisma: PrismaService,
     private readonly planLimits: PlanLimitService,
     private readonly auditLog: AuditLogService,
+    private readonly email: EmailService,
   ) {}
 
   private ensureAdmin(user: RequestUser) {
@@ -113,11 +115,12 @@ export class TeacherService {
 
     const temporaryPassword = Math.random().toString(36).slice(-10);
     const hashedPassword = await bcrypt.hash(temporaryPassword, 10);
+    const teacherEmail = dto.email ?? `${dto.employeeId}@teacher.local`;
 
     const teacher = await this.prisma.$transaction(async (tx) => {
       const teacherUser = await tx.user.create({
         data: {
-          email: dto.email ?? `${dto.employeeId}@teacher.local`,
+          email: teacherEmail,
           firstName: dto.firstName,
           lastName: dto.lastName,
           phone: dto.phone,
@@ -147,6 +150,15 @@ export class TeacherService {
           photoUrl: dto.photoUrl,
         },
       });
+
+      if (dto.email) {
+        this.email.assertConfigured();
+        await this.email.send(
+          dto.email,
+          'Your teacher account is ready',
+          `Your temporary password is: ${temporaryPassword}. Use it to sign in and then change your password from the account settings page.`,
+        );
+      }
 
       await this.auditLog.create({
         schoolId: membership.schoolId,
