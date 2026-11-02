@@ -31,6 +31,17 @@ export class SubscriptionLifecycleService
 
   private async expireDueSubscriptions() {
     try {
+      const pendingPaymentExpiry = new Date(
+        Date.now() - 24 * 60 * 60 * 1000,
+      );
+      await this.prisma.subscriptionPayment.updateMany({
+        where: {
+          status: 'PENDING',
+          createdAt: { lte: pendingPaymentExpiry },
+        },
+        data: { status: 'FAILED' },
+      });
+
       await this.prisma.subscription.updateMany({
         where: {
           status: {

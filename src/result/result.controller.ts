@@ -3,6 +3,8 @@ import { ResultsService } from './result.service';
 import { CreateResultDto } from './dto/create-result.dto';
 import { UpdateResultDto } from './dto/update-result.dto';
 import { CurrentUser, type RequestUser } from '../auth/decorator/current-user.decorator';
+import { Roles } from '../auth/decorator/roles.decorator';
+import { UserRole } from '@prisma/client';
 
 @Controller('result')
 export class ResultController {
@@ -15,15 +17,24 @@ export class ResultController {
   }
 
   @Get('me')
+  @Roles(UserRole.STUDENT, UserRole.PARENT)
   findMine(@CurrentUser() user: RequestUser) { return this.resultService.findMine(user); }
 
   @Get()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN, UserRole.TEACHER)
   findAll( @CurrentUser() user: RequestUser,
 ) {
     return this.resultService.findAll(user);
   }
 
   @Get(':id')
+  @Roles(
+    UserRole.STUDENT,
+    UserRole.PARENT,
+    UserRole.TEACHER,
+    UserRole.SCHOOL_ADMIN,
+    UserRole.SUPER_ADMIN,
+  )
   findOne( @CurrentUser() user: RequestUser,
   @Param('id') id: string) {
     return this.resultService.findOne(user,id);

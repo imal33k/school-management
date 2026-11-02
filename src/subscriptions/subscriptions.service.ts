@@ -18,18 +18,22 @@ import { UpdateSubscriptionStatusDto } from './dto/update-subscription-status.dt
 import { InitializeSubscriptionPaymentDto } from './dto/initialize-subscription-payment.dto';
 import { PaystackService } from '../payments/paystack.service';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { PlanLimitService } from '../plans/plan-limit.service';
+import { randomBytes } from 'crypto';
 
 @Injectable()
 export class SubscriptionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly paystack: PaystackService,
+    private readonly planLimits: PlanLimitService,
   ) {}
 
   private async getSchoolId(user: RequestUser): Promise<string> {
     const membership = await this.prisma.schoolMembership.findFirst({
       where: {
         userId: user.id,
+        ...(user.schoolId ? { schoolId: user.schoolId } : {}),
       },
     });
 
@@ -89,6 +93,12 @@ export class SubscriptionsService {
     if (!selectedPlan) throw new NotFoundException('Plan not found');
     if (!selectedPlan.isActive)
       throw new BadRequestException('The selected plan is inactive');
+    if (selectedPlan.id !== subscription.planId) {
+      await this.planLimits.ensurePlanCanAccommodate(
+        subscription.schoolId,
+        selectedPlan,
+      );
+    }
     const existingPending = await this.prisma.subscriptionPayment.findFirst({
       where: { subscriptionId: id, status: 'PENDING' },
       orderBy: { createdAt: 'desc' },
@@ -128,7 +138,7 @@ export class SubscriptionsService {
         'A subscription payment is being initialized; retry shortly',
       );
     }
-    const reference = `SUB-${Date.now()}-${Math.random().toString(36).slice(-8).toUpperCase()}`;
+    const reference = `SUB-${Date.now()}-${randomBytes(8).toString('hex').toUpperCase()}`;
     const amount = Number(selectedPlan.price);
     const payment = await this.prisma.subscriptionPayment.create({
       data: {

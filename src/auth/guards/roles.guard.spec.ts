@@ -24,7 +24,16 @@ describe('RolesGuard', () => {
     }),
   } as unknown as ExecutionContext;
 
-  const request = {
+  const request: {
+    user:
+      | {
+          id: string;
+          email: string;
+          role: UserRole;
+          schoolId: string;
+        }
+      | undefined;
+  } = {
     user: {
       id: 'user-1',
       email: 'teacher@example.com',

@@ -74,8 +74,17 @@ button { color: inherit; }
 .field input, .field select, .field textarea { min-width: 0; width: 100%; height: 43px; padding: 0 13px; outline: none; border: 1px solid #e5eae4; border-radius: 7px; background: #fff; color: #334139; font-size: 12px; font-weight: 500; transition: border-color .15s, box-shadow .15s; }
 .field input::placeholder { color: #b4bcb5; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: #8cae9b; box-shadow: 0 0 0 3px rgba(71, 126, 98, .1); }
-.auth-links { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 22px; color: #87928b; font-size: 11px; }
-.auth-links > span { text-align: right; }
+.auth-links { display: flex; flex-direction: column; gap: 17px; margin-top: 22px; color: #87928b; font-size: 11px; }
+.auth-link-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.auth-links > span { text-align: center; }
+.auth-links .auth-account-link { padding-top: 14px; border-top: 1px solid #edf0ec; }
+.auth-links .text-link { padding: 0; border: 0; background: transparent; cursor: pointer; font-family: inherit; }
+.auth-links .text-link:disabled { color: #a0aaa3; cursor: not-allowed; }
+.auth-links > span:not(.auth-account-link) { align-self: center; }
+.verification-prompt { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: -8px 0 20px; padding: 13px 14px; border: 1px solid #dfe9df; border-radius: 8px; background: #f5f8f4; }
+.verification-prompt p { margin: 0; color: #62736a; font-size: 11px; line-height: 1.55; }
+.verification-prompt .text-link { flex: 0 0 auto; padding: 0; border: 0; background: transparent; color: var(--forest); font: inherit; font-size: 11px; font-weight: 700; text-decoration: underline; cursor: pointer; }
+.verification-prompt .text-link:disabled { color: #a0aaa3; cursor: not-allowed; }
 .auth-footnote { display: flex; justify-content: space-between; margin: 20px auto 0; max-width: 510px; color: #a0aaa3; font-size: 10px; }
 .auth-footnote span { color: #b9c0bb; }
 
@@ -411,8 +420,11 @@ button { color: inherit; }
   .auth-top > span { font-size: 10px; }
   .auth-card { padding: 24px 0; }
   .auth-card h2 { font-size: 26px; }
-  .auth-links { align-items: flex-start; flex-direction: column; }
-  .auth-links > span { text-align: left; }
+  .auth-links { gap: 15px; }
+  .auth-link-actions { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .auth-links > span:not(.auth-account-link) { align-self: flex-start; }
+  .auth-links .auth-account-link { width: 100%; text-align: left; }
+  .verification-prompt { align-items: flex-start; flex-direction: column; gap: 9px; }
   .auth-footnote { flex-direction: column; gap: 5px; }
   .onboarding-page { padding: 17px; }
   .onboarding-card { margin: 30px 0; padding: 22px 17px; }

@@ -42,6 +42,7 @@ export class SubjectsService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -79,6 +80,7 @@ export class SubjectsService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -106,6 +108,7 @@ export class SubjectsService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -129,7 +132,13 @@ export class SubjectsService {
           },
           teacherAssignments: {
             include: {
-              teacher: true,
+              teacher: {
+                select: {
+                  id: true,
+                  firstName: true,
+                  lastName: true,
+                },
+              },
             },
           },
         },
@@ -155,6 +164,7 @@ export class SubjectsService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -218,6 +228,7 @@ export class SubjectsService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -233,11 +244,28 @@ export class SubjectsService {
           id,
           schoolId: membership.schoolId,
         },
+        include: {
+          _count: {
+            select: {
+              classAssignments: true,
+              examinations: true,
+              results: true,
+              teacherAssignments: true,
+              timetableEntries: true,
+            },
+          },
+        },
       });
 
     if (!subject) {
       throw new NotFoundException(
         'Subject not found',
+      );
+    }
+
+    if (Object.values(subject._count).some((count) => count > 0)) {
+      throw new ConflictException(
+        'Subjects with academic results, examinations, assignments, or timetable entries cannot be deleted',
       );
     }
 

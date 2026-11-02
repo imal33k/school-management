@@ -31,6 +31,7 @@ export class ExaminationsService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -185,9 +186,7 @@ export class ExaminationsService {
         termId: term.id,
         classId: schoolClass.id,
         name: dto.name,
-        status:
-          dto.status ??
-          ExaminationStatus.DRAFT,
+        status: ExaminationStatus.DRAFT,
         startDate,
         endDate,
       },
@@ -253,7 +252,6 @@ export class ExaminationsService {
               subject: true,
             },
           },
-          results: true,
         },
       });
 
@@ -291,6 +289,39 @@ export class ExaminationsService {
       throw new NotFoundException(
         'Examination not found',
       );
+    }
+
+    const hasContentChanges =
+      dto.name !== undefined ||
+      dto.startDate !== undefined ||
+      dto.endDate !== undefined;
+
+    if (
+      examination.status === ExaminationStatus.PUBLISHED &&
+      hasContentChanges
+    ) {
+      throw new ConflictException(
+        'Published examinations cannot be changed',
+      );
+    }
+
+    if (
+      dto.status !== undefined &&
+      dto.status !== examination.status
+    ) {
+      const allowedNextStatuses: Partial<
+        Record<ExaminationStatus, ExaminationStatus[]>
+      > = {
+        [ExaminationStatus.DRAFT]: [ExaminationStatus.OPEN],
+        [ExaminationStatus.OPEN]: [ExaminationStatus.COMPLETED],
+        [ExaminationStatus.COMPLETED]: [ExaminationStatus.PUBLISHED],
+      };
+
+      if (!allowedNextStatuses[examination.status]?.includes(dto.status)) {
+        throw new ConflictException(
+          `Examination status cannot transition from ${examination.status} to ${dto.status}`,
+        );
+      }
     }
 
     const startDate = dto.startDate
@@ -351,45 +382,65 @@ export class ExaminationsService {
       }
     }
 
-    return this.prisma.examination.update({
-      where: {
-        id,
-      },
-      data: {
-        ...(dto.name !== undefined
-          ? {
-              name: dto.name,
-            }
-          : {}),
+    return this.prisma.$transaction(async (tx) => {
+      const updateResult = await tx.examination.updateMany({
+        where: {
+          id,
+          schoolId,
+          status: examination.status,
+        },
+        data: {
+          ...(dto.name !== undefined ? { name: dto.name } : {}),
+          ...(dto.status !== undefined ? { status: dto.status } : {}),
+          ...(startDate !== undefined ? { startDate } : {}),
+          ...(endDate !== undefined ? { endDate } : {}),
+        },
+      });
 
-        ...(dto.status !== undefined
-          ? {
-              status: dto.status,
-            }
-          : {}),
+      if (updateResult.count !== 1) {
+        throw new ConflictException(
+          'The examination changed while this update was being processed',
+        );
+      }
 
-        ...(startDate !== undefined
-          ? {
-              startDate,
-            }
-          : {}),
-
-        ...(endDate !== undefined
-          ? {
-              endDate,
-            }
-          : {}),
-      },
-      include: {
-        session: true,
-        term: true,
-        class: true,
-        subjects: {
-          include: {
-            subject: true,
+      const updatedExamination = await tx.examination.findUnique({
+        where: { id },
+        include: {
+          session: true,
+          term: true,
+          class: true,
+          subjects: {
+            include: {
+              subject: true,
+            },
           },
         },
-      },
+      });
+
+      if (!updatedExamination) {
+        throw new NotFoundException('Examination not found');
+      }
+
+      if (
+        dto.status !== undefined &&
+        dto.status !== examination.status
+      ) {
+        await tx.auditLog.create({
+          data: {
+            schoolId,
+            userId: user.id,
+            action: 'examination.status_changed',
+            resource: 'Examination',
+            resourceId: id,
+            metadata: {
+              from: examination.status,
+              to: dto.status,
+            },
+          },
+        });
+      }
+
+      return updatedExamination;
     });
   }
 

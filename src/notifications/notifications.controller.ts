@@ -6,6 +6,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 
 import { NotificationService } from './notifications.service';
 
@@ -13,6 +14,7 @@ import {
   CurrentUser,
   type RequestUser,
 } from '../auth/decorator/current-user.decorator';
+import { Roles } from '../auth/decorator/roles.decorator';
 
 import { CreateNotificationDto } from './dto/create-notification.dto';
 
@@ -23,6 +25,7 @@ export class NotificationController {
   ) {}
 
   @Post()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   create(
     @CurrentUser() user: RequestUser,
     @Body() dto: CreateNotificationDto,
@@ -34,6 +37,7 @@ export class NotificationController {
   }
 
   @Get()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   findAll(
     @CurrentUser() user: RequestUser,
   ) {
@@ -41,6 +45,14 @@ export class NotificationController {
   }
 
   @Get('me')
+  @Roles(
+    UserRole.SCHOOL_ADMIN,
+    UserRole.SUPER_ADMIN,
+    UserRole.TEACHER,
+    UserRole.ACCOUNTANT,
+    UserRole.PARENT,
+    UserRole.STUDENT,
+  )
   myNotifications(
     @CurrentUser() user: RequestUser,
   ) {
@@ -50,6 +62,7 @@ export class NotificationController {
   }
 
   @Get(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   findOne(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -61,6 +74,14 @@ export class NotificationController {
   }
 
   @Patch(':id/read')
+  @Roles(
+    UserRole.SCHOOL_ADMIN,
+    UserRole.SUPER_ADMIN,
+    UserRole.TEACHER,
+    UserRole.ACCOUNTANT,
+    UserRole.PARENT,
+    UserRole.STUDENT,
+  )
   markAsRead(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,

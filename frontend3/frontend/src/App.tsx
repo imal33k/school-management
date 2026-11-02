@@ -42,7 +42,15 @@ import {
   useNavigate,
   useParams,
 } from 'react-router-dom';
-import { api, clearToken, getToken, setToken } from './api.js';
+import {
+  api,
+  clearToken,
+  ApiError,
+  getRefreshToken,
+  getToken,
+  setRefreshToken,
+  setToken,
+} from './api.js';
 
 type Role =
   | 'SUPER_ADMIN'
@@ -57,6 +65,7 @@ type User = {
   email: string;
   role: Role;
   schoolId?: string;
+  mustChangePassword?: boolean;
 };
 
 type Plan = {
@@ -137,7 +146,7 @@ const resources: Record<string, Resource> = {
       { name: 'firstName', label: 'First name', required: true },
       { name: 'lastName', label: 'Last name', required: true },
       { name: 'employeeId', label: 'Employee ID', required: true },
-      { name: 'email', label: 'Email address', type: 'email' },
+      { name: 'email', label: 'Email address', type: 'email', required: true },
       { name: 'phone', label: 'Phone' },
     ],
     columns: ['employeeId', 'firstName', 'lastName', 'email', 'phone'],
@@ -269,9 +278,9 @@ const navGroups: Array<{
     label: 'Workspace',
     items: [
       { title: 'Overview', path: '/app', icon: LayoutDashboard, roles: ['SUPER_ADMIN', 'SCHOOL_ADMIN', 'TEACHER', 'ACCOUNTANT', 'PARENT', 'STUDENT'] },
-      { title: 'Students', path: '/app/students', icon: GraduationCap, roles: ['SCHOOL_ADMIN', 'TEACHER', 'ACCOUNTANT'] },
+      { title: 'Students', path: '/app/students', icon: GraduationCap, roles: ['SCHOOL_ADMIN', 'TEACHER', 'STUDENT'] },
       { title: 'Teachers', path: '/app/teachers', icon: Users, roles: ['SCHOOL_ADMIN', 'SUPER_ADMIN'] },
-      { title: 'Parents', path: '/app/parents', icon: Users, roles: ['SCHOOL_ADMIN', 'TEACHER'] },
+      { title: 'Parents', path: '/app/parents', icon: Users, roles: ['SCHOOL_ADMIN', 'PARENT'] },
       { title: 'Classes', path: '/app/classes', icon: BookOpen, roles: ['SCHOOL_ADMIN', 'TEACHER'] },
       { title: 'Subjects', path: '/app/subjects', icon: BookOpen, roles: ['SCHOOL_ADMIN', 'TEACHER'] },
     ],
@@ -325,7 +334,22 @@ function displayRole(role: Role) {
 
 function ErrorMessage({ error }: { error: unknown }) {
   if (!error) return null;
-  const message = error instanceof Error ? error.message : 'Something went wrong. Please try again.';
+  const objectMessage =
+    error && typeof error === 'object' && 'message' in error
+      ? (error as { message: unknown }).message
+      : undefined;
+  const message =
+    error instanceof ApiError
+      ? error.message
+      : error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : typeof objectMessage === 'string'
+            ? objectMessage
+            : Array.isArray(objectMessage)
+              ? objectMessage.filter((part): part is string => typeof part === 'string').join('. ')
+              : 'We could not complete that request. Please try again.';
   return <div className="alert alert-error" role="alert">{message}</div>;
 }
 
@@ -369,20 +393,53 @@ function App() {
   }, [navigate]);
 
   const login = async (email: string, password: string) => {
-    const result = await api<{ access_token: string }>('/auth/login', {
+    const result = await api<{ access_token: string; refresh_token: string }>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
     setToken(result.access_token);
+    setRefreshToken(result.refresh_token);
     const me = await api<User>('/auth/me');
     setUser(me);
-    navigate('/app');
+    navigate(me.mustChangePassword ? '/change-password' : '/app');
   };
 
-  const logout = () => {
+  const changePassword = async (
+    currentPassword: string,
+    newPassword: string,
+  ) => {
+    await api('/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
     clearToken();
     setUser(null);
-    navigate('/login');
+    navigate('/login', {
+      replace: true,
+      state: { message: 'Password changed. Sign in with your new password.' },
+    });
+  };
+
+  const logout = async () => {
+    const refreshToken = getRefreshToken();
+    let logoutError: string | undefined;
+    try {
+      await api('/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify({ refreshToken }),
+      });
+    } catch (error) {
+      logoutError =
+        error instanceof Error
+          ? `Your browser signed out, but the server session could not be revoked: ${error.message}`
+          : 'Your browser signed out, but the server session could not be revoked.';
+    } finally {
+      clearToken();
+      setUser(null);
+      navigate('/login', {
+        state: logoutError ? { logoutError } : undefined,
+      });
+    }
   };
 
   if (booting) {
@@ -391,24 +448,39 @@ function App() {
 
   return (
     <Routes>
-      <Route path="/login" element={user ? <Navigate to="/app" replace /> : <AuthPage mode="login" onLogin={login} />} />
+      <Route path="/login" element={user ? <Navigate to={user.mustChangePassword ? '/change-password' : '/app'} replace /> : <AuthPage mode="login" onLogin={login} />} />
       <Route path="/register" element={user ? <Navigate to="/app" replace /> : <AuthPage mode="register" onLogin={login} />} />
+      <Route path="/verify-email" element={<AuthPage mode="verify" onLogin={login} />} />
       <Route path="/forgot-password" element={<AuthPage mode="forgot" onLogin={login} />} />
       <Route path="/reset-password" element={<AuthPage mode="reset" onLogin={login} />} />
       <Route path="/accept-invitation" element={<AuthPage mode="invite" onLogin={login} />} />
       <Route
+        path="/change-password"
+        element={
+          user?.mustChangePassword ? (
+            <TemporaryPasswordChange onChangePassword={changePassword} />
+          ) : (
+            <Navigate to={user ? '/app' : '/login'} replace />
+          )
+        }
+      />
+      <Route
         path="/app/*"
         element={
           user ? (
-            <SchoolGate user={user} onComplete={refreshUser}>
-              <AppShell
-                user={user}
-                currentPath={location.pathname}
-                onLogout={logout}
-                authError={authError}
-                onUserRefresh={refreshUser}
-              />
-            </SchoolGate>
+            user.mustChangePassword ? (
+              <Navigate to="/change-password" replace />
+            ) : (
+              <SchoolGate user={user} onComplete={refreshUser}>
+                <AppShell
+                  user={user}
+                  currentPath={location.pathname}
+                  onLogout={logout}
+                  authError={authError}
+                  onUserRefresh={refreshUser}
+                />
+              </SchoolGate>
+            )
           ) : (
             <Navigate to="/login" replace state={{ from: location }} />
           )
@@ -419,53 +491,167 @@ function App() {
   );
 }
 
+function TemporaryPasswordChange({
+  onChangePassword,
+}: {
+  onChangePassword: (
+    currentPassword: string,
+    newPassword: string,
+  ) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    setBusy(true);
+    const form = new FormData(event.currentTarget);
+    try {
+      await onChangePassword(
+        String(form.get('currentPassword') ?? ''),
+        String(form.get('newPassword') ?? ''),
+      );
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : 'Please try again.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth-layout">
+      <section className="auth-story">
+        <Link to="/" className="brand brand-light">
+          <span className="brand-mark"><GraduationCap size={20} /></span>
+          <span>schoolhouse</span>
+        </Link>
+        <div className="story-copy">
+          <span className="eyebrow light-eyebrow"><span className="eyebrow-dot" /> One more step</span>
+          <h1>Make this account<br /><em>your own.</em></h1>
+          <p>For your security, choose a new password before using your teacher account.</p>
+        </div>
+      </section>
+      <section className="auth-panel">
+        <div className="auth-card">
+          <span className="eyebrow">ACCOUNT SECURITY</span>
+          <h2>Change your temporary password</h2>
+          <p className="auth-intro">Your school administrator sent you a one-time password. Replace it with a private password you will remember.</p>
+          <ErrorMessage error={error} />
+          <form className="form-stack" onSubmit={submit}>
+            <label className="field">
+              <span>Temporary password</span>
+              <input type="password" name="currentPassword" required autoComplete="current-password" />
+            </label>
+            <label className="field">
+              <span>New password</span>
+              <input type="password" name="newPassword" required minLength={8} autoComplete="new-password" />
+            </label>
+            <button className="button button-primary button-full" disabled={busy}>
+              {busy ? <span className="spinner" /> : null}
+              {busy ? 'Please wait…' : 'Save new password'}
+              {!busy && <ArrowRight size={16} />}
+            </button>
+          </form>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function AuthPage({
   mode,
   onLogin,
 }: {
-  mode: 'login' | 'register' | 'forgot' | 'reset' | 'invite';
+  mode: 'login' | 'register' | 'forgot' | 'reset' | 'invite' | 'verify';
   onLogin: (email: string, password: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [email, setEmail] = useState('');
+  const [verificationNeeded, setVerificationNeeded] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
+  const logoutError = (location.state as { logoutError?: string } | null)
+    ?.logoutError;
+  const routeMessage = (location.state as { message?: string } | null)
+    ?.message;
   const query = new URLSearchParams(window.location.search);
   const token = query.get('token') ?? '';
+  async function resendVerification() {
+    setError('');
+    setSuccess('');
+    setBusy(true);
+    try {
+      await api('/auth/resend-verification', {
+        method: 'POST',
+        body: JSON.stringify({ email }),
+      });
+      setSuccess('If this address belongs to an unverified account, a verification link has been sent.');
+    } catch (resendError) {
+      setError(resendError instanceof Error ? resendError.message : 'Unable to send a verification link.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const heading =
     mode === 'login'
       ? 'Welcome back'
       : mode === 'register'
-        ? 'A better school day starts here'
+        ? 'Register your school'
         : mode === 'forgot'
           ? 'Let’s get you back in'
           : mode === 'reset'
             ? 'Choose a new password'
-            : 'You’re invited to join';
+            : mode === 'verify'
+              ? 'Verify your email'
+              : 'You’re invited to join';
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError('');
     setSuccess('');
+    setVerificationNeeded(false);
     setBusy(true);
     const form = new FormData(event.currentTarget);
-    const email = String(form.get('email') ?? '');
+    const email = String(
+      form.get('schoolemail') ?? form.get('email') ?? '',
+    );
+    setEmail(email);
     const password = String(form.get('password') ?? '');
     try {
       if (mode === 'login') {
         await onLogin(email, password);
       } else if (mode === 'register') {
-        await api('/auth/register', {
+        const result = await api<{ message: string }>('/auth/register', {
           method: 'POST',
           body: JSON.stringify({
-            email,
+            schoolemail: email,
+            schoolName: form.get('schoolName'),
             password,
-            firstName: form.get('firstName'),
-            lastName: form.get('lastName'),
             phone: form.get('phone') || undefined,
+            schooladdress: form.get('schooladdress') || undefined,
           }),
         });
-        await onLogin(email, password);
+        if (result.message.includes('verification is disabled')) {
+          setSuccess('Account created. Signing you in…');
+          await onLogin(email, password);
+        } else {
+          setSuccess('Your school account was created. Verify your email before signing in.');
+          setVerificationNeeded(true);
+        }
+      } else if (mode === 'verify') {
+        await api('/auth/verify-email', {
+          method: 'POST',
+          body: JSON.stringify({ token }),
+        });
+        setSuccess('Your email is verified. You can now sign in.');
       } else if (mode === 'forgot') {
         await api('/auth/forgot-password', {
           method: 'POST',
@@ -493,7 +679,12 @@ function AuthPage({
         await onLogin(result.email, password);
       }
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Please try again.');
+      const message = submitError instanceof Error ? submitError.message : 'Please try again.';
+      setError(message);
+      setVerificationNeeded(
+        (mode === 'login' && /verify your email|verify email/i.test(message)) ||
+        (mode === 'register' && /email already exists/i.test(message)),
+      );
     } finally {
       setBusy(false);
     }
@@ -533,24 +724,48 @@ function AuthPage({
             {mode === 'login'
               ? 'Sign in to pick up where your school left off.'
               : mode === 'register'
-                ? 'Create your administrator account to get started.'
+                ? 'Create your school administrator account and school profile.'
                 : mode === 'forgot'
                   ? 'Enter the email you use for schoolhouse and we’ll send a reset link.'
                   : mode === 'reset'
                     ? 'Use at least eight characters for your new password.'
-                    : 'Set up your account to accept this school invitation.'}
+                      : mode === 'verify'
+                        ? 'Confirm your email address to activate your school administrator account.'
+                        : 'Set up your account to accept this school invitation.'}
           </p>
+          {logoutError && <ErrorMessage error={logoutError} />}
+          {routeMessage && <div className="alert alert-success"><Check size={16} />{routeMessage}</div>}
           <ErrorMessage error={error} />
           {success && <div className="alert alert-success"><Check size={16} />{success}</div>}
+          {verificationNeeded && (
+            <section className="verification-prompt" aria-live="polite">
+              <p>
+                {mode === 'register'
+                  ? 'An account already uses this email. Try signing in; if it asks you to verify your email, you can request another verification message here.'
+                  : 'This account needs email verification before you can sign in. Check your inbox or request another verification email.'}
+              </p>
+              <button
+                type="button"
+                className="text-link"
+                disabled={busy || !email}
+                onClick={() => void resendVerification()}
+              >
+                {busy ? 'Sending…' : 'Resend verification email'}
+              </button>
+            </section>
+          )}
           <form className="form-stack" onSubmit={submit}>
-            {(mode === 'register' || mode === 'invite') && (
+            {mode === 'invite' && (
               <div className="field-row">
                 <label className="field"><span>First name</span><input name="firstName" required minLength={2} autoComplete="given-name" /></label>
                 <label className="field"><span>Last name</span><input name="lastName" required minLength={2} autoComplete="family-name" /></label>
               </div>
             )}
+            {mode === 'register' && (
+              <label className="field"><span>School name</span><input name="schoolName" required minLength={2} autoComplete="organization" /></label>
+            )}
             {(mode === 'login' || mode === 'register' || mode === 'forgot') && (
-              <label className="field"><span>Email address</span><input type="email" name="email" required autoComplete="email" placeholder="you@school.edu" /></label>
+              <label className="field"><span>{mode === 'register' ? 'School email' : 'Email address'}</span><input type="email" name={mode === 'register' ? 'schoolemail' : 'email'} value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" placeholder="you@school.edu" /></label>
             )}
             {(mode === 'login' || mode === 'register' || mode === 'reset' || mode === 'invite') && (
               <label className="field">
@@ -561,14 +776,23 @@ function AuthPage({
             {(mode === 'register' || mode === 'invite') && (
               <label className="field"><span>Phone <small>Optional</small></span><input name="phone" autoComplete="tel" /></label>
             )}
+            {mode === 'register' && (
+              <label className="field"><span>School address <small>Optional</small></span><input name="schooladdress" autoComplete="street-address" /></label>
+            )}
             <button className="button button-primary button-full" disabled={busy}>
               {busy ? <span className="spinner" /> : null}
-              {busy ? 'Please wait…' : mode === 'login' ? 'Sign in to your school' : mode === 'register' ? 'Create administrator account' : mode === 'forgot' ? 'Send reset link' : mode === 'reset' ? 'Save new password' : 'Accept invitation'}
+              {busy ? 'Please wait…' : mode === 'login' ? 'Sign in to your school' : mode === 'register' ? 'Register your school' : mode === 'forgot' ? 'Send reset link' : mode === 'reset' ? 'Save new password' : mode === 'verify' ? 'Verify email address' : 'Accept invitation'}
               {!busy && <ArrowRight size={16} />}
             </button>
           </form>
           <div className="auth-links">
-            {mode === 'login' && <><Link to="/forgot-password">Forgot password?</Link><span>New to Schoolhouse? <Link to="/register">Create an account</Link></span></>}
+            {mode === 'login' && <>
+              <div className="auth-link-actions">
+                <Link to="/forgot-password">Forgot password?</Link>
+              </div>
+              <span className="auth-account-link">New to Schoolhouse? <Link to="/register">Create an account</Link></span>
+            </>}
+            {mode === 'verify' && <span><Link to="/login">Return to sign in</Link></span>}
             {mode === 'register' && <span>Already have an account? <Link to="/login">Sign in</Link></span>}
             {mode === 'forgot' && <span>Remembered it? <Link to="/login">Back to sign in</Link></span>}
             {(mode === 'reset' || mode === 'invite') && <span>Having trouble? <Link to="/login">Return to sign in</Link></span>}
@@ -754,11 +978,16 @@ function Dashboard({ user, schoolName }: { user: User; schoolName: string }) {
 
   useEffect(() => {
     setLoading(true);
+    if (family) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
     void api<DashboardData>(superAdmin ? '/super-admin/dashboard' : '/dashboard')
       .then(setData)
       .catch(setError)
       .finally(() => setLoading(false));
-  }, [superAdmin]);
+  }, [family, superAdmin]);
 
   const statItems = superAdmin
     ? [
@@ -864,6 +1093,7 @@ function EmptyState({ icon, title, body, action }: { icon: ReactNode; title: str
 
 function ResourcePage({ resourceKey, user }: { resourceKey: string; user: User }) {
   const { id } = useParams();
+  const location = useLocation();
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
   const [data, setData] = useState<Record<string, unknown>[]>([]);
@@ -872,6 +1102,7 @@ function ResourcePage({ resourceKey, user }: { resourceKey: string; user: User }
   const [error, setError] = useState<unknown>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  const [payingInvoiceId, setPayingInvoiceId] = useState('');
   const navigate = useNavigate();
   const config = useMemo<Resource>(() => resourceKey === 'platform-schools'
     ? { title: 'Schools', description: 'Schools using your platform, all in one view.', endpoint: '/schools', columns: ['name', 'slug', 'status', 'createdAt'], detail: (itemId: string) => `/schools/${itemId}` }
@@ -882,6 +1113,11 @@ function ResourcePage({ resourceKey, user }: { resourceKey: string; user: User }
     ? `/school-membership/school/${user.schoolId}`
     : config.endpoint;
   const isMine = ['notifications', 'students', 'parents', 'invoices', 'results', 'attendance'].includes(resourceKey) && (user.role === 'PARENT' || user.role === 'STUDENT');
+  const canOpenDetail = !(
+    (resourceKey === 'invoices' &&
+      (user.role === 'PARENT' || user.role === 'STUDENT')) ||
+    (resourceKey === 'parents' && user.role === 'PARENT')
+  );
   const finalEndpoint = isMine && resources[resourceKey].endpoint !== '/notifications/me'
     ? `${resources[resourceKey].endpoint}/me`
     : endpoint;
@@ -907,8 +1143,16 @@ function ResourcePage({ resourceKey, user }: { resourceKey: string; user: User }
           setMeta({ total: result.length, totalPages: 1 });
         } else if (result && typeof result === 'object') {
           const response = result as { data?: unknown[]; meta?: { total?: number; totalPages?: number } };
-          setData(Array.isArray(response.data) ? response.data as Record<string, unknown>[] : []);
-          setMeta({ total: response.meta?.total ?? 0, totalPages: response.meta?.totalPages ?? 1 });
+          if (Array.isArray(response.data)) {
+            setData(response.data as Record<string, unknown>[]);
+            setMeta({
+              total: response.meta?.total ?? response.data.length,
+              totalPages: response.meta?.totalPages ?? 1,
+            });
+          } else {
+            setData([result as Record<string, unknown>]);
+            setMeta({ total: 1, totalPages: 1 });
+          }
         } else {
           setData([result as Record<string, unknown>]);
         }
@@ -917,6 +1161,66 @@ function ResourcePage({ resourceKey, user }: { resourceKey: string; user: User }
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [config, finalEndpoint, id, page, query, refresh, resourceKey]);
+
+  useEffect(() => {
+    if (resourceKey !== 'invoices') return;
+    const params = new URLSearchParams(location.search);
+    const reference = params.get('reference') ?? params.get('trxref');
+    if (!reference) return;
+
+    let active = true;
+    void api(`/payments/verify/${encodeURIComponent(reference)}`)
+      .then(() => {
+        if (active) setRefresh((value) => value + 1);
+      })
+      .catch((verifyError) => {
+        if (active) setError(verifyError);
+      })
+      .finally(() => {
+        if (!active) return;
+        params.delete('reference');
+        params.delete('trxref');
+        const search = params.toString();
+        navigate(
+          { pathname: location.pathname, search: search ? `?${search}` : '' },
+          { replace: true },
+        );
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [location.pathname, location.search, navigate, resourceKey]);
+
+  async function payInvoice(invoice: Record<string, unknown>) {
+    const invoiceId = String(invoice.id ?? '');
+    const studentId = String(invoice.studentId ?? '');
+    if (!invoiceId || !studentId) {
+      setError(new Error('This invoice is missing its student information.'));
+      return;
+    }
+
+    setError(null);
+    setPayingInvoiceId(invoiceId);
+    try {
+      const checkout = await api<{ authorizationUrl: string }>(
+        '/payments/initialize',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            studentId,
+            invoiceId,
+            callbackUrl: `${window.location.origin}${window.location.pathname}`,
+          }),
+        },
+      );
+      window.location.assign(checkout.authorizationUrl);
+    } catch (paymentError) {
+      setError(paymentError);
+    } finally {
+      setPayingInvoiceId('');
+    }
+  }
 
   const fields = config.columns ?? Object.keys(data[0] ?? {}).filter((key) => !['id', 'schoolId', 'userId', 'createdAt', 'updatedAt'].includes(key)).slice(0, 5);
   const canCreate = !!config.fields && (
@@ -948,9 +1252,30 @@ function ResourcePage({ resourceKey, user }: { resourceKey: string; user: User }
             <tbody>
               {loading && <tr><td colSpan={fields.length + 1}><LoadingRows /></td></tr>}
               {!loading && data.map((item, index) => (
-                <tr key={String(item.id ?? index)} onClick={() => item.id && config.detail && navigate(`/app/${resourceKey}/${String(item.id)}`)}>
+                <tr key={String(item.id ?? index)} onClick={() => item.id && config.detail && canOpenDetail && navigate(`/app/${resourceKey}/${String(item.id)}`)}>
                   {fields.map((field) => <td key={field}>{renderCell(item[field], field)}</td>)}
-                  <td className="table-action"><button className="icon-button" aria-label={`View ${title.slice(0, -1)}`} onClick={(event) => { event.stopPropagation(); if (item.id && config.detail) navigate(`/app/${resourceKey}/${String(item.id)}`); }}><ArrowRight size={15} /></button></td>
+                  <td className="table-action">
+                    {resourceKey === 'invoices' &&
+                      (user.role === 'STUDENT' || user.role === 'PARENT') &&
+                      ['UNPAID', 'PARTIALLY_PAID', 'OVERDUE'].includes(
+                        String(item.status),
+                      ) &&
+                      Number(item.amount) > Number(item.amountPaid ?? 0) && (
+                        <button
+                          className="button button-quiet"
+                          disabled={payingInvoiceId === String(item.id)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void payInvoice(item);
+                          }}
+                        >
+                          {payingInvoiceId === String(item.id)
+                            ? 'Opening…'
+                            : 'Pay invoice'}
+                        </button>
+                      )}
+                    {canOpenDetail && config.detail && <button className="icon-button" aria-label={`View ${title.slice(0, -1)}`} onClick={(event) => { event.stopPropagation(); if (item.id) navigate(`/app/${resourceKey}/${String(item.id)}`); }}><ArrowRight size={15} /></button>}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1012,9 +1337,11 @@ function AcademicSessions({ user }: { user: User }) {
   const [sessions, setSessions] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  const [success, setSuccess] = useState('');
   const [create, setCreate] = useState(false);
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
+    setLoading(true);
     void api<Record<string, unknown>[]>('/academic-sessions')
       .then(setSessions)
       .catch(setError)
@@ -1029,7 +1356,19 @@ function AcademicSessions({ user }: { user: User }) {
       setError(activateError);
     }
   }
-  return <div className="page-stack"><PageHeader eyebrow="SCHOOL CALENDAR" title="Academic sessions" description="One school year at a time. Keep every term in its right place." action={user.role === 'SCHOOL_ADMIN' ? <button className="button button-primary" onClick={() => setCreate(true)}><Plus size={16} /> New session</button> : undefined} />{Boolean(error) && <ErrorMessage error={error} />}<div className="session-list">{loading ? <LoadingRows /> : sessions.map((session) => <article className={`session-card ${session.isActive ? 'session-active' : ''}`} key={String(session.id)}><div className="session-date"><CalendarDays size={18} /><span>{new Date(String(session.startDate)).getFullYear()}<small>ACADEMIC YEAR</small></span></div><div className="session-body"><div className="session-title"><h2>{String(session.name)}</h2>{Boolean(session.isActive) && <span className="status-pill status-active"><span /> Active now</span>}</div><p>{new Date(String(session.startDate)).toLocaleDateString()} — {new Date(String(session.endDate)).toLocaleDateString()}</p><div className="session-terms">{(Array.isArray(session.terms) ? session.terms : []).map((term) => <span key={String((term as Record<string, unknown>).id)}>{String((term as Record<string, unknown>).name)}</span>)}</div><Link className="text-link session-term-link" to={`/app/terms?sessionId=${session.id}`}>Manage terms <ArrowRight size={13} /></Link></div><div className="session-actions">{!session.isActive && user.role === 'SCHOOL_ADMIN' && <button className="button button-outline" onClick={() => void activate(String(session.id))}>Make active</button>}<Link className="icon-button" to={`/app/sessions/${session.id}`} aria-label="View session"><ArrowRight size={16} /></Link></div></article>)}{!loading && !sessions.length && <section className="panel"><EmptyState icon={<CalendarDays size={20} />} title="Your school year starts here" body="Create an academic session, then add terms that fit within its dates." action={user.role === 'SCHOOL_ADMIN' ? <button className="button button-primary" onClick={() => setCreate(true)}><Plus size={15} /> Create session</button> : undefined} /></section>}</div>{create && <CreateRecordModal title="Academic session" endpoint="/academic-sessions" fields={resources.sessions.fields!} onClose={() => setCreate(false)} onCreated={() => { setCreate(false); setRefresh((value) => value + 1); }} />}</div>;
+  async function rollover(id: string) {
+    if (!window.confirm('Copy the active session’s classes, subject and teacher assignments, timetable, and active student enrollments into this empty session? Existing results, invoices, and terms will not be copied.')) return;
+    setError(null);
+    setSuccess('');
+    try {
+      const result = await api<{ classes: number; studentEnrollments: number }>(`/academic-sessions/${id}/rollover`, { method: 'POST' });
+      setSuccess(`Session setup copied: ${result.classes} classes and ${result.studentEnrollments} active student enrollments.`);
+      setRefresh((value) => value + 1);
+    } catch (rolloverError) {
+      setError(rolloverError);
+    }
+  }
+  return <div className="page-stack"><PageHeader eyebrow="SCHOOL CALENDAR" title="Academic sessions" description="One school year at a time. Keep every term in its right place." action={user.role === 'SCHOOL_ADMIN' ? <button className="button button-primary" onClick={() => setCreate(true)}><Plus size={16} /> New session</button> : undefined} />{Boolean(error) && <ErrorMessage error={error} />}{success && <div className="alert alert-success"><Check size={16} />{success}</div>}<div className="session-list">{loading ? <LoadingRows /> : sessions.map((session) => <article className={`session-card ${session.isActive ? 'session-active' : ''}`} key={String(session.id)}><div className="session-date"><CalendarDays size={18} /><span>{new Date(String(session.startDate)).getFullYear()}<small>ACADEMIC YEAR</small></span></div><div className="session-body"><div className="session-title"><h2>{String(session.name)}</h2>{Boolean(session.isActive) && <span className="status-pill status-active"><span /> Active now</span>}</div><p>{new Date(String(session.startDate)).toLocaleDateString()} — {new Date(String(session.endDate)).toLocaleDateString()}</p><div className="session-terms">{(Array.isArray(session.terms) ? session.terms : []).map((term) => <span key={String((term as Record<string, unknown>).id)}>{String((term as Record<string, unknown>).name)}</span>)}</div><Link className="text-link session-term-link" to={`/app/terms?sessionId=${session.id}`}>Manage terms <ArrowRight size={13} /></Link></div><div className="session-actions">{!session.isActive && user.role === 'SCHOOL_ADMIN' && <><button className="button button-outline" onClick={() => void rollover(String(session.id))}>Copy active setup</button><button className="button button-outline" onClick={() => void activate(String(session.id))}>Make active</button></>}<Link className="icon-button" to={`/app/sessions/${session.id}`} aria-label="View session"><ArrowRight size={16} /></Link></div></article>)}{!loading && !sessions.length && <section className="panel"><EmptyState icon={<CalendarDays size={20} />} title="Your school year starts here" body="Create an academic session, then add terms that fit within its dates." action={user.role === 'SCHOOL_ADMIN' ? <button className="button button-primary" onClick={() => setCreate(true)}><Plus size={15} /> Create session</button> : undefined} /></section>}</div>{create && <CreateRecordModal title="Academic session" endpoint="/academic-sessions" fields={resources.sessions.fields!} onClose={() => setCreate(false)} onCreated={() => { setCreate(false); setRefresh((value) => value + 1); }} />}</div>;
 }
 
 function TermsPage({ user }: { user: User }) {
@@ -1198,12 +1537,24 @@ function InviteMember() {
 }
 
 function SchoolSettings({ user, onUserRefresh }: { user: User; onUserRefresh: () => Promise<void> }) {
-  const [school, setSchool] = useState<Record<string, string>>({});
+  const [school, setSchool] = useState<{
+    name?: string;
+    email?: string | null;
+    phone?: string | null;
+    address?: string | null;
+    website?: string | null;
+    logoUrl?: string | null;
+    hasPaystackSubaccount?: boolean;
+  }>({});
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [busy, setBusy] = useState(false);
+  const [settlementBusy, setSettlementBusy] = useState(false);
+  const [settlementError, setSettlementError] = useState('');
+  const [settlementSuccess, setSettlementSuccess] = useState('');
+  const canManage = user.role === 'SCHOOL_ADMIN';
   useEffect(() => {
-    void api<Record<string, string>>('/schools/me').then(setSchool).catch((loadError) => setError(loadError.message));
+    void api<typeof school>('/schools/me').then(setSchool).catch((loadError) => setError(loadError.message));
   }, []);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1222,12 +1573,45 @@ function SchoolSettings({ user, onUserRefresh }: { user: User; onUserRefresh: ()
       setBusy(false);
     }
   }
+  async function submitSettlement(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSettlementBusy(true);
+    setSettlementError('');
+    setSettlementSuccess('');
+    const form = new FormData(event.currentTarget);
+    const body = Object.fromEntries(form.entries());
+    try {
+      await api('/schools/me/paystack-subaccount', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      setSchool((current) => ({ ...current, hasPaystackSubaccount: true }));
+      setSettlementSuccess('Your settlement account is configured. Bank details are not stored in Schoolhouse.');
+    } catch (saveError) {
+      setSettlementError(saveError instanceof Error ? saveError.message : 'Settlement setup could not be completed.');
+    } finally {
+      setSettlementBusy(false);
+    }
+  }
   if (user.role === 'SUPER_ADMIN') return <div className="page-stack"><PageHeader title="Platform settings" description="Account and platform access." /><section className="panel setting-card"><span className="eyebrow">SIGNED IN AS</span><h2>{user.email}</h2><p>Your platform account is protected by your sign-in credentials.</p></section></div>;
-  return <div className="page-stack"><PageHeader eyebrow="SCHOOL ADMINISTRATION" title="The details that make you, you." description="Keep your school information current for your community." /><section className="panel settings-panel"><div className="settings-section-title"><span className="settings-icon"><GraduationCap size={18} /></span><div><h2>School profile</h2><p>How your school appears across the workspace.</p></div></div>{Boolean(error) && <ErrorMessage error={error} />}{success && <div className="alert alert-success"><Check size={16} />{success}</div>}<form className="settings-form" onSubmit={submit}><label className="field"><span>School name</span><input name="name" defaultValue={school.name} required maxLength={150} /></label><div className="field-row"><label className="field"><span>Contact email</span><input name="email" type="email" defaultValue={school.email} /></label><label className="field"><span>Phone number</span><input name="phone" defaultValue={school.phone} /></label></div><label className="field"><span>School address</span><input name="address" defaultValue={school.address} /></label><div className="field-row"><label className="field"><span>Website</span><input name="website" type="url" defaultValue={school.website} /></label><label className="field"><span>School logo URL</span><input name="logoUrl" type="url" defaultValue={school.logoUrl} /></label></div><div className="settings-actions"><span><ShieldCheck size={15} /> Only school administrators can change these details.</span><button className="button button-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'} <ArrowRight size={15} /></button></div></form></section></div>;
+  return <div className="page-stack"><PageHeader eyebrow="SCHOOL ADMINISTRATION" title="The details that make you, you." description="Keep your school information current for your community." /><section className="panel settings-panel"><div className="settings-section-title"><span className="settings-icon"><GraduationCap size={18} /></span><div><h2>School profile</h2><p>How your school appears across the workspace.</p></div></div>{Boolean(error) && <ErrorMessage error={error} />}{success && <div className="alert alert-success"><Check size={16} />{success}</div>}{!canManage && <p className="modal-description">Only a school administrator can update these settings.</p>}<form className="settings-form" onSubmit={submit}><label className="field"><span>School name</span><input name="name" value={school.name ?? ''} onChange={(event) => setSchool((current) => ({ ...current, name: event.target.value }))} required maxLength={150} disabled={!canManage} /></label><div className="field-row"><label className="field"><span>Contact email</span><input name="email" type="email" value={school.email ?? ''} onChange={(event) => setSchool((current) => ({ ...current, email: event.target.value }))} disabled={!canManage} /></label><label className="field"><span>Phone number</span><input name="phone" value={school.phone ?? ''} onChange={(event) => setSchool((current) => ({ ...current, phone: event.target.value }))} disabled={!canManage} /></label></div><label className="field"><span>School address</span><input name="address" value={school.address ?? ''} onChange={(event) => setSchool((current) => ({ ...current, address: event.target.value }))} disabled={!canManage} /></label><div className="field-row"><label className="field"><span>Website</span><input name="website" type="url" value={school.website ?? ''} onChange={(event) => setSchool((current) => ({ ...current, website: event.target.value }))} disabled={!canManage} /></label><label className="field"><span>School logo URL</span><input name="logoUrl" type="url" value={school.logoUrl ?? ''} onChange={(event) => setSchool((current) => ({ ...current, logoUrl: event.target.value }))} disabled={!canManage} /></label></div>{canManage && <div className="settings-actions"><span><ShieldCheck size={15} /> Only school administrators can change these details.</span><button className="button button-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'} <ArrowRight size={15} /></button></div>}</form></section>{canManage && <section className="panel settings-panel"><div className="settings-section-title"><span className="settings-icon"><CreditCard size={18} /></span><div><h2>Online payment settlement</h2><p>Connect your school’s Paystack subaccount to receive school-fee payments directly.</p></div></div>{school.hasPaystackSubaccount ? <div className="alert alert-success"><Check size={16} />Settlement account is configured. Bank account details are not displayed or stored here.</div> : <><p className="modal-description">Use the settlement bank code and account number provided by your bank. Paystack will validate the details.</p>{settlementError && <ErrorMessage error={settlementError} />}{settlementSuccess && <div className="alert alert-success"><Check size={16} />{settlementSuccess}</div>}<form className="settings-form" onSubmit={submitSettlement}><label className="field"><span>Account name</span><input name="accountName" required minLength={2} maxLength={100} /></label><div className="field-row"><label className="field"><span>Paystack settlement bank code</span><input name="settlementBank" inputMode="numeric" pattern="[0-9]{2,12}" required /></label><label className="field"><span>Account number</span><input name="accountNumber" inputMode="numeric" pattern="[0-9]{8,20}" autoComplete="off" required /></label></div><div className="settings-actions"><span><ShieldCheck size={15} /> Bank details are sent to Paystack and not persisted by this app.</span><button className="button button-primary" disabled={settlementBusy}>{settlementBusy ? 'Connecting…' : 'Connect Paystack'} <ArrowRight size={15} /></button></div></form></>}</section>}</div>;
 }
 
 function Onboarding({ onComplete }: { onComplete: () => Promise<void> }) {
-  const [error, setError] = useState('');
+  const location = useLocation();
+  const onboardingState = location.state as
+    | {
+        schoolDetails?: {
+          name?: string;
+          email?: string;
+          phone?: string;
+          address?: string;
+        };
+        onboardingError?: string;
+      }
+    | null;
+  const schoolDetails = onboardingState?.schoolDetails;
+  const [error, setError] = useState(onboardingState?.onboardingError ?? '');
   const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1244,7 +1628,7 @@ function Onboarding({ onComplete }: { onComplete: () => Promise<void> }) {
       setBusy(false);
     }
   }
-  return <div className="onboarding-page"><Link to="/app" className="brand"><span className="brand-mark"><GraduationCap size={20} /></span><span>schoolhouse</span></Link><div className="onboarding-card"><span className="onboarding-illustration"><BookOpen size={27} /></span><span className="eyebrow">FIRST, THE IMPORTANT THINGS</span><h1>Let’s make this space yours.</h1><p>A few details now will make everything feel more like your school.</p>{Boolean(error) && <ErrorMessage error={error} />}<form className="form-stack" onSubmit={submit}><label className="field"><span>School name</span><input name="name" required minLength={2} placeholder="e.g. Cedar Grove School" /></label><label className="field"><span>School email <small>Optional</small></span><input name="email" type="email" placeholder="hello@your-school.edu" /></label><div className="field-row"><label className="field"><span>Phone <small>Optional</small></span><input name="phone" /></label><label className="field"><span>Website <small>Optional</small></span><input name="website" type="url" placeholder="https://" /></label></div><label className="field"><span>Address <small>Optional</small></span><input name="address" /></label><button className="button button-primary button-full" disabled={busy}>{busy ? 'Setting up…' : 'Create my school'} <ArrowRight size={16} /></button></form></div><p className="onboarding-foot">Your school workspace is just getting started.</p></div>;
+  return <div className="onboarding-page"><Link to="/app" className="brand"><span className="brand-mark"><GraduationCap size={20} /></span><span>schoolhouse</span></Link><div className="onboarding-card"><span className="onboarding-illustration"><BookOpen size={27} /></span><span className="eyebrow">FIRST, THE IMPORTANT THINGS</span><h1>Let’s make this space yours.</h1><p>A few details now will make everything feel more like your school.</p>{Boolean(error) && <ErrorMessage error={error} />}<form className="form-stack" onSubmit={submit}><label className="field"><span>School name</span><input name="name" required minLength={2} defaultValue={schoolDetails?.name} placeholder="e.g. Cedar Grove School" /></label><label className="field"><span>School email <small>Optional</small></span><input name="email" type="email" defaultValue={schoolDetails?.email} placeholder="hello@your-school.edu" /></label><div className="field-row"><label className="field"><span>Phone <small>Optional</small></span><input name="phone" defaultValue={schoolDetails?.phone} /></label><label className="field"><span>Website <small>Optional</small></span><input name="website" type="url" placeholder="https://" /></label></div><label className="field"><span>Address <small>Optional</small></span><input name="address" defaultValue={schoolDetails?.address} /></label><button className="button button-primary button-full" disabled={busy}>{busy ? 'Setting up…' : 'Create my school'} <ArrowRight size={16} /></button></form></div><p className="onboarding-foot">Your school workspace is just getting started.</p></div>;
 }
 
 function humanize(value: string) {

@@ -1,5 +1,14 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
-import { SchoolStatus, SubscriptionStatus } from '@prisma/client';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common';
+import {
+  Plan,
+  SchoolStatus,
+  StudentStatus,
+  SubscriptionStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -25,7 +34,12 @@ export class PlanLimitService {
 
     if (kind === 'students') {
       count = await this.prisma.student.count({
-        where: { schoolId },
+        where: {
+          schoolId,
+          status: {
+            notIn: [StudentStatus.GRADUATED, StudentStatus.TRANSFERRED],
+          },
+        },
       });
     } else if (kind === 'teachers') {
       count = await this.prisma.teacher.count({
@@ -40,6 +54,42 @@ export class PlanLimitService {
     if (count >= limit) {
       throw new ForbiddenException(
         `Your ${subscription.plan.name} plan allows a maximum of ${limit} ${kind}`,
+      );
+    }
+  }
+
+  async ensurePlanCanAccommodate(schoolId: string, plan: Plan) {
+    const [students, teachers, parents] = await Promise.all([
+      this.prisma.student.count({
+        where: {
+          schoolId,
+          status: {
+            notIn: [StudentStatus.GRADUATED, StudentStatus.TRANSFERRED],
+          },
+        },
+      }),
+      this.prisma.teacher.count({ where: { schoolId } }),
+      this.prisma.parent.count({ where: { schoolId } }),
+    ]);
+
+    const overLimits = [
+      plan.maxStudents != null &&
+      students > plan.maxStudents
+        ? `${students} students (limit ${plan.maxStudents})`
+        : null,
+      plan.maxTeachers != null &&
+      teachers > plan.maxTeachers
+        ? `${teachers} teachers (limit ${plan.maxTeachers})`
+        : null,
+      plan.maxParents != null &&
+      parents > plan.maxParents
+        ? `${parents} parents (limit ${plan.maxParents})`
+        : null,
+    ].filter((item): item is string => item !== null);
+
+    if (overLimits.length) {
+      throw new ConflictException(
+        `The selected ${plan.name} plan does not cover current usage: ${overLimits.join(', ')}`,
       );
     }
   }

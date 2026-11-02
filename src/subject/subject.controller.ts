@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 
 import { SubjectsService } from './subject.service';
 
@@ -17,6 +18,7 @@ import {
   CurrentUser,
   type RequestUser,
 } from '../auth/decorator/current-user.decorator';
+import { Roles } from '../auth/decorator/roles.decorator';
 
 @Controller('subject')
 export class SubjectController {
@@ -25,6 +27,7 @@ export class SubjectController {
   ) {}
 
   @Post()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   create(
     @CurrentUser() user: RequestUser,
     @Body() dto: CreateSubjectDto,
@@ -36,6 +39,14 @@ export class SubjectController {
   }
 
   @Get()
+  @Roles(
+    UserRole.SCHOOL_ADMIN,
+    UserRole.SUPER_ADMIN,
+    UserRole.TEACHER,
+    UserRole.ACCOUNTANT,
+    UserRole.PARENT,
+    UserRole.STUDENT,
+  )
   findAll(
     @CurrentUser() user: RequestUser,
   ) {
@@ -43,6 +54,14 @@ export class SubjectController {
   }
 
   @Get(':id')
+  @Roles(
+    UserRole.SCHOOL_ADMIN,
+    UserRole.SUPER_ADMIN,
+    UserRole.TEACHER,
+    UserRole.ACCOUNTANT,
+    UserRole.PARENT,
+    UserRole.STUDENT,
+  )
   findOne(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -54,6 +73,7 @@ export class SubjectController {
   }
 
   @Patch(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   update(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -67,6 +87,7 @@ export class SubjectController {
   }
 
   @Delete(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   remove(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,

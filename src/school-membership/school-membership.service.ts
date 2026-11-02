@@ -4,7 +4,6 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
-  ServiceUnavailableException,
 } from '@nestjs/common';
 
 import { CreateSchoolMembershipDto } from './dto/create-school-membership.dto';
@@ -130,10 +129,9 @@ export class SchoolMembershipService {
     }
 
     this.email.assertConfigured();
-    const appUrl = process.env.APP_URL;
-    if (!appUrl) {
-      throw new ServiceUnavailableException('APP_URL is not configured');
-    }
+    const appUrl = (
+      process.env.FRONTEND_URL ?? 'http://localhost:5173'
+    ).replace(/\/$/, '');
 
     if (dto.role === UserRole.TEACHER && !dto.employeeId) {
       throw new BadRequestException(
@@ -196,7 +194,7 @@ export class SchoolMembershipService {
       await this.email.send(
         dto.email,
         'You are invited to join a school',
-        `Accept this invitation within seven days: ${appUrl.replace(/\/$/, '')}/accept-invitation?token=${rawToken}`,
+        `Accept this invitation within seven days: ${appUrl}/accept-invitation?token=${rawToken}`,
       );
     } catch (error) {
       await this.prisma.schoolInvitation.delete({
@@ -264,6 +262,7 @@ export class SchoolMembershipService {
             lastName: dto.lastName,
             phone: dto.phone,
             role: invitation.role,
+            emailVerifiedAt: now,
           },
         });
         await tx.schoolMembership.create({
@@ -378,6 +377,7 @@ export class SchoolMembershipService {
           lastName: dto.lastName,
           phone: dto.phone,
           role: dto.role,
+          emailVerifiedAt: new Date(),
         },
       });
       await tx.schoolMembership.create({

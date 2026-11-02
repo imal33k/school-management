@@ -20,14 +20,29 @@ describe('JwtAuthGuard tenant access', () => {
     user: undefined as unknown,
   };
   const jwt = {
-    verifyAsync: jest.fn().mockResolvedValue({ sub: 'user-1' }),
+    verifyAsync: jest
+      .fn<(...args: unknown[]) => Promise<unknown>>()
+      .mockResolvedValue({
+        sub: 'user-1',
+        tokenType: 'access',
+        sessionId: 'session-1',
+      }),
   };
   const reflector = {
-    getAllAndOverride: jest.fn().mockReturnValue(false),
+    getAllAndOverride: jest
+      .fn<(...args: unknown[]) => unknown>()
+      .mockReturnValue(false),
   };
   const prisma = {
-    user: { findUnique: jest.fn() },
-    subscription: { updateMany: jest.fn() },
+    user: {
+      findUnique: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+    },
+    refreshToken: {
+      findFirst: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+    },
+    subscription: {
+      updateMany: jest.fn<(...args: unknown[]) => Promise<unknown>>(),
+    },
   };
   const guard = new JwtAuthGuard(
     jwt as unknown as JwtService,
@@ -43,7 +58,12 @@ describe('JwtAuthGuard tenant access', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     reflector.getAllAndOverride.mockReturnValue(false);
-    jwt.verifyAsync.mockResolvedValue({ sub: 'user-1' });
+    jwt.verifyAsync.mockResolvedValue({
+      sub: 'user-1',
+      tokenType: 'access',
+      sessionId: 'session-1',
+    });
+    prisma.refreshToken.findFirst.mockResolvedValue({ id: 'token-1' });
     prisma.subscription.updateMany.mockResolvedValue({ count: 1 });
     request.path = '/students';
     request.method = 'GET';
@@ -56,12 +76,14 @@ describe('JwtAuthGuard tenant access', () => {
     status: SubscriptionStatus | null,
     endDate = new Date(now.getTime() + 86_400_000),
     startDate = new Date(now.getTime() - 86_400_000),
+    mustChangePassword = false,
   ) {
     prisma.user.findUnique.mockResolvedValue({
       id: 'user-1',
       email: 'admin@example.test',
       role: UserRole.SCHOOL_ADMIN,
       status: UserStatus.ACTIVE,
+      mustChangePassword,
       memberships: [
         {
           schoolId: 'school-1',
@@ -76,6 +98,54 @@ describe('JwtAuthGuard tenant access', () => {
       ],
     });
   }
+
+  it('rejects access tokens without a session id', async () => {
+    jwt.verifyAsync.mockResolvedValue({
+      sub: 'user-1',
+      tokenType: 'access',
+    });
+
+    await expect(guard.canActivate(context)).rejects.toThrow(
+      'Invalid token payload',
+    );
+  });
+
+  it('rejects access tokens for revoked sessions', async () => {
+    prisma.refreshToken.findFirst.mockResolvedValue(null);
+
+    await expect(guard.canActivate(context)).rejects.toThrow(
+      'This session is no longer active',
+    );
+  });
+
+  it('forces a temporary-password account to change its password', async () => {
+    setUser(
+      SchoolStatus.ACTIVE,
+      UserRole.SCHOOL_ADMIN,
+      SubscriptionStatus.ACTIVE,
+      undefined,
+      undefined,
+      true,
+    );
+
+    await expect(guard.canActivate(context)).rejects.toThrow(
+      'Change your temporary password before accessing school features',
+    );
+  });
+
+  it('allows a temporary-password account to reach the password-change route', async () => {
+    request.path = '/auth/change-password';
+    setUser(
+      SchoolStatus.ACTIVE,
+      UserRole.SCHOOL_ADMIN,
+      SubscriptionStatus.ACTIVE,
+      undefined,
+      undefined,
+      true,
+    );
+
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
 
   it('blocks suspended schools', async () => {
     setUser(

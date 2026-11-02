@@ -77,4 +77,12 @@ export class AcademicSessionController {
       id,
     );
   }
+
+  @Post(':id/rollover')
+  rollover(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+  ) {
+    return this.academicSessionService.rollover(user, id);
+  }
 }

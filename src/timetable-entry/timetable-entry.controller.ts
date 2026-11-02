@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 
 import { TimetableService } from './timetable-entry.module';
 
@@ -14,6 +15,7 @@ import {
   CurrentUser,
   type RequestUser,
 } from '../auth/decorator/current-user.decorator';
+import { Roles } from '../auth/decorator/roles.decorator';
 
 import { CreateTimetableEntryDto } from './dto/create-timetable-entry.dto';
 import { UpdateTimetableEntryDto } from './dto/update-timetable-entry.dto';
@@ -25,6 +27,7 @@ export class TimetableController {
   ) {}
 
   @Post()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   create(
     @CurrentUser() user: RequestUser,
     @Body() dto: CreateTimetableEntryDto,
@@ -33,6 +36,13 @@ export class TimetableController {
   }
 
   @Get()
+  @Roles(
+    UserRole.SCHOOL_ADMIN,
+    UserRole.SUPER_ADMIN,
+    UserRole.TEACHER,
+    UserRole.PARENT,
+    UserRole.STUDENT,
+  )
   findAll(
     @CurrentUser() user: RequestUser,
   ) {
@@ -40,6 +50,13 @@ export class TimetableController {
   }
 
   @Get(':id')
+  @Roles(
+    UserRole.SCHOOL_ADMIN,
+    UserRole.SUPER_ADMIN,
+    UserRole.TEACHER,
+    UserRole.PARENT,
+    UserRole.STUDENT,
+  )
   findOne(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -48,6 +65,7 @@ export class TimetableController {
   }
 
   @Patch(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   update(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -61,6 +79,7 @@ export class TimetableController {
   }
 
   @Delete(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   remove(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,

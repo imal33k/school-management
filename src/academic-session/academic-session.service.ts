@@ -12,7 +12,7 @@ import {
   RequestUser,
 } from '../auth/decorator/current-user.decorator';
 
-import { UserRole } from '@prisma/client';
+import { EnrollmentStatus, StudentStatus, UserRole } from '@prisma/client';
 
 import { CreateAcademicSessionDto } from './dto/create-academic-session.dto';
 import { UpdateAcademicSessionDto } from './dto/update-academic-session.dto';
@@ -39,6 +39,7 @@ export class AcademicSessionService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -104,6 +105,9 @@ export class AcademicSessionService {
       },
       include: {
         terms: true,
+        _count: {
+          select: { classes: true, enrollments: true },
+        },
       },
       orderBy: {
         startDate: 'desc',
@@ -181,6 +185,22 @@ export class AcademicSessionService {
       );
     }
 
+    const outOfBoundsTerm = await this.prisma.term.findFirst({
+      where: {
+        academicSessionId: session.id,
+        OR: [
+          { startDate: { lt: startDate } },
+          { endDate: { gt: endDate } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (outOfBoundsTerm) {
+      throw new ConflictException(
+        'Session dates cannot exclude dates from an existing term',
+      );
+    }
+
     if (dto.name && dto.name !== session.name) {
       const existingSession =
         await this.prisma.academicSession.findFirst({
@@ -227,11 +247,27 @@ export class AcademicSessionService {
           id,
           schoolId: membership.schoolId,
         },
+        include: {
+          _count: {
+            select: {
+              classes: true,
+              examinations: true,
+              enrollments: true,
+              terms: true,
+            },
+          },
+        },
       });
 
     if (!session) {
       throw new NotFoundException(
         'Academic session not found',
+      );
+    }
+
+    if (Object.values(session._count).some((count) => count > 0)) {
+      throw new ConflictException(
+        'Academic sessions with classes, terms, enrollments, or examinations cannot be deleted',
       );
     }
 
@@ -271,25 +307,183 @@ export class AcademicSessionService {
       );
     }
 
-    return this.prisma.$transaction([
-      this.prisma.academicSession.updateMany({
+    return this.prisma.$transaction(async (tx) => {
+      const otherSessions = await tx.academicSession.findMany({
+        where: {
+          schoolId: membership.schoolId,
+          id: { not: id },
+        },
+        select: { id: true },
+      });
+      if (otherSessions.length) {
+        await tx.term.updateMany({
+          where: {
+            academicSessionId: {
+              in: otherSessions.map((otherSession) => otherSession.id),
+            },
+            isActive: true,
+          },
+          data: { isActive: false },
+        });
+      }
+      await tx.academicSession.updateMany({
         where: {
           schoolId: membership.schoolId,
           isActive: true,
         },
-        data: {
-          isActive: false,
-        },
-      }),
+        data: { isActive: false },
+      });
+      return tx.academicSession.update({
+        where: { id },
+        data: { isActive: true },
+      });
+    });
+  }
 
-      this.prisma.academicSession.update({
+  async rollover(user: RequestUser, targetSessionId: string) {
+    this.ensureAdmin(user);
+    const membership = await this.getMembership(user);
+
+    return this.prisma.$transaction(async (tx) => {
+      const target = await tx.academicSession.findFirst({
         where: {
-          id,
+          id: targetSessionId,
+          schoolId: membership.schoolId,
         },
-        data: {
+        include: {
+          _count: {
+            select: { classes: true, enrollments: true },
+          },
+        },
+      });
+      if (!target) {
+        throw new NotFoundException('Target academic session not found');
+      }
+      if (target.isActive) {
+        throw new BadRequestException(
+          'Choose an inactive target session for rollover',
+        );
+      }
+      if (target._count.classes || target._count.enrollments) {
+        throw new ConflictException(
+          'Rollover requires a target session with no classes or enrollments',
+        );
+      }
+
+      const source = await tx.academicSession.findFirst({
+        where: {
+          schoolId: membership.schoolId,
           isActive: true,
+          id: { not: target.id },
         },
-      }),
-    ]);
+        include: {
+          classes: {
+            include: {
+              subjects: { select: { subjectId: true } },
+              teachers: { select: { teacherId: true, isPrimary: true } },
+              timetableEntries: {
+                select: {
+                  subjectId: true,
+                  teacherId: true,
+                  day: true,
+                  startTime: true,
+                  endTime: true,
+                  room: true,
+                },
+              },
+              enrollments: {
+                where: {
+                  status: EnrollmentStatus.ACTIVE,
+                  student: { status: StudentStatus.ACTIVE },
+                },
+                select: { studentId: true },
+              },
+            },
+          },
+        },
+      });
+      if (!source) {
+        throw new NotFoundException(
+          'An active source academic session was not found',
+        );
+      }
+      if (!source.classes.length) {
+        throw new ConflictException(
+          'The active session has no classes to roll over',
+        );
+      }
+
+      let classesCopied = 0;
+      for (const sourceClass of source.classes) {
+        const targetClass = await tx.schoolClass.create({
+          data: {
+            schoolId: membership.schoolId,
+            academicSessionId: target.id,
+            name: sourceClass.name,
+            level: sourceClass.level,
+            capacity: sourceClass.capacity,
+          },
+          select: { id: true },
+        });
+        classesCopied += 1;
+
+        if (sourceClass.subjects.length) {
+          await tx.classSubject.createMany({
+            data: sourceClass.subjects.map(({ subjectId }) => ({
+              classId: targetClass.id,
+              subjectId,
+            })),
+          });
+        }
+        if (sourceClass.teachers.length) {
+          await tx.classTeacher.createMany({
+            data: sourceClass.teachers.map(({ teacherId, isPrimary }) => ({
+              classId: targetClass.id,
+              teacherId,
+              isPrimary,
+            })),
+          });
+        }
+        if (sourceClass.timetableEntries.length) {
+          await tx.timetableEntry.createMany({
+            data: sourceClass.timetableEntries.map((entry) => ({
+              ...entry,
+              classId: targetClass.id,
+            })),
+          });
+        }
+        if (sourceClass.enrollments.length) {
+          await tx.enrollment.createMany({
+            data: sourceClass.enrollments.map(({ studentId }) => ({
+              studentId,
+              classId: targetClass.id,
+              academicSessionId: target.id,
+              status: EnrollmentStatus.ACTIVE,
+            })),
+          });
+        }
+      }
+
+      return {
+        sourceSessionId: source.id,
+        targetSessionId: target.id,
+        classes: classesCopied,
+        classAssignments: source.classes.reduce(
+          (total, schoolClass) =>
+            total + schoolClass.subjects.length + schoolClass.teachers.length,
+          0,
+        ),
+        timetableEntries: source.classes.reduce(
+          (total, schoolClass) =>
+            total + schoolClass.timetableEntries.length,
+          0,
+        ),
+        studentEnrollments: source.classes.reduce(
+          (total, schoolClass) =>
+            total + schoolClass.enrollments.length,
+          0,
+        ),
+      };
+    });
   }
 }

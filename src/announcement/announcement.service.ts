@@ -6,6 +6,7 @@ import {
 
 import {
   AnnouncementAudience,
+  Prisma,
   UserRole,
 } from '@prisma/client';
 
@@ -58,11 +59,10 @@ export class AnnouncementService {
   async findAll(user: RequestUser) {
     const membership =
       await this.getMembership(user);
+    const where = await this.getAnnouncementVisibility(user, membership.schoolId);
 
     return this.prisma.announcement.findMany({
-      where: {
-        schoolId: membership.schoolId,
-      },
+      where,
       include: {
         class: true,
       },
@@ -78,12 +78,16 @@ export class AnnouncementService {
   ) {
     const membership =
       await this.getMembership(user);
+    const visibility = await this.getAnnouncementVisibility(
+      user,
+      membership.schoolId,
+    );
 
     const announcement =
       await this.prisma.announcement.findFirst({
         where: {
           id,
-          schoolId: membership.schoolId,
+          ...visibility,
         },
         include: {
           class: true,
@@ -221,6 +225,7 @@ export class AnnouncementService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -243,5 +248,100 @@ export class AnnouncementService {
     }
 
     return this.getMembership(user);
+  }
+
+  private async getAnnouncementVisibility(
+    user: RequestUser,
+    schoolId: string,
+  ): Promise<Prisma.AnnouncementWhereInput> {
+    if (
+      user.role === UserRole.SCHOOL_ADMIN ||
+      user.role === UserRole.SUPER_ADMIN
+    ) {
+      return { schoolId };
+    }
+
+    let audience: AnnouncementAudience;
+    let classIds: string[] = [];
+
+    if (user.role === UserRole.TEACHER) {
+      audience = AnnouncementAudience.TEACHERS;
+      const teacher = await this.prisma.teacher.findUnique({
+        where: { userId: user.id },
+        include: { classAssignments: { select: { classId: true } } },
+      });
+      if (!teacher) {
+        throw new ForbiddenException('Teacher profile not found');
+      }
+      classIds = teacher.classAssignments.map(
+        (assignment) => assignment.classId,
+      );
+    } else if (user.role === UserRole.STUDENT) {
+      audience = AnnouncementAudience.STUDENTS;
+      const student = await this.prisma.student.findFirst({
+        where: { userId: user.id, schoolId },
+        include: {
+          enrollments: {
+            where: { status: 'ACTIVE' },
+            select: { classId: true },
+          },
+        },
+      });
+      if (!student) {
+        throw new ForbiddenException('Student profile not found');
+      }
+      classIds = student.enrollments.map(
+        (enrollment) => enrollment.classId,
+      );
+    } else if (user.role === UserRole.PARENT) {
+      audience = AnnouncementAudience.PARENTS;
+      const parent = await this.prisma.parent.findFirst({
+        where: { userId: user.id, schoolId },
+        include: {
+          children: {
+            where: { student: { schoolId } },
+            include: {
+              student: {
+                include: {
+                  enrollments: {
+                    where: { status: 'ACTIVE' },
+                    select: { classId: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+      if (!parent) {
+        throw new ForbiddenException('Parent profile not found');
+      }
+      classIds = parent.children.flatMap((child) =>
+        child.student.enrollments.map((enrollment) => enrollment.classId),
+      );
+    } else if (user.role === UserRole.ACCOUNTANT) {
+      audience = AnnouncementAudience.ACCOUNTANTS;
+    } else {
+      throw new ForbiddenException(
+        'You are not allowed to view announcements',
+      );
+    }
+
+    const audienceConditions: Prisma.AnnouncementWhereInput[] = [
+      { audience: AnnouncementAudience.ALL },
+      { audience },
+    ];
+    if (classIds.length) {
+      audienceConditions.push({
+        audience: AnnouncementAudience.SPECIFIC_CLASS,
+        classId: { in: classIds },
+      });
+    }
+
+    return {
+      schoolId,
+      published: true,
+      OR: audienceConditions,
+    };
   }
 }

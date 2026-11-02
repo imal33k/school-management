@@ -1,12 +1,9 @@
 import {
   IsDateString,
-  IsEnum,
   IsOptional,
   IsString,
   IsUUID,
 } from 'class-validator';
-
-import { ExaminationStatus } from '@prisma/client';
 
 export class CreateExaminationDto {
   @IsUUID()
@@ -20,10 +17,6 @@ export class CreateExaminationDto {
 
   @IsString()
   name!: string;
-
-  @IsOptional()
-  @IsEnum(ExaminationStatus)
-  status?: ExaminationStatus;
 
   @IsOptional()
   @IsDateString()

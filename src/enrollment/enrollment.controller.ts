@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 
 import { EnrollmentService } from './enrollment.service';
 
@@ -17,6 +18,7 @@ import {
   CurrentUser,
   type RequestUser,
 } from '../auth/decorator/current-user.decorator';
+import { Roles } from '../auth/decorator/roles.decorator';
 
 @Controller('enrollments')
 export class EnrollmentController {
@@ -25,6 +27,7 @@ export class EnrollmentController {
   ) {}
 
   @Post()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   create(
     @CurrentUser() user: RequestUser,
     @Body() dto: CreateEnrollmentDto,
@@ -36,6 +39,7 @@ export class EnrollmentController {
   }
 
   @Get()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   findAll(
     @CurrentUser() user: RequestUser,
   ) {
@@ -45,6 +49,7 @@ export class EnrollmentController {
   }
 
   @Get('class/:classId')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   findByClass(
     @CurrentUser() user: RequestUser,
     @Param('classId') classId: string,
@@ -56,6 +61,7 @@ export class EnrollmentController {
   }
 
   @Get('student/:studentId')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   findByStudent(
     @CurrentUser() user: RequestUser,
     @Param('studentId') studentId: string,
@@ -67,6 +73,7 @@ export class EnrollmentController {
   }
 
   @Get(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   findOne(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -78,6 +85,7 @@ export class EnrollmentController {
   }
 
   @Patch(':id/status')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   updateStatus(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -91,6 +99,7 @@ export class EnrollmentController {
   }
 
   @Delete(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   remove(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,

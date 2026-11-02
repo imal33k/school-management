@@ -29,6 +29,7 @@ export class FeeStructuresService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -199,7 +200,6 @@ export class FeeStructuresService {
               academicSession: true,
             },
           },
-          invoices: true,
         },
       });
 
@@ -236,7 +236,34 @@ export class FeeStructuresService {
       );
     }
 
-    if (dto.name !== undefined) {
+    const targetTermId = dto.termId ?? feeStructure.termId;
+    const targetName = dto.name ?? feeStructure.name;
+    const termChanged = targetTermId !== feeStructure.termId;
+
+    if (termChanged) {
+      const term = await this.prisma.term.findFirst({
+        where: {
+          id: targetTermId,
+          academicSession: { schoolId },
+        },
+        select: { id: true },
+      });
+      if (!term) {
+        throw new NotFoundException('Term not found in this school');
+      }
+
+      const linkedInvoice = await this.prisma.invoice.findFirst({
+        where: { feeStructureId: feeStructure.id },
+        select: { id: true },
+      });
+      if (linkedInvoice) {
+        throw new ConflictException(
+          'A fee structure with existing invoices cannot be moved to another term',
+        );
+      }
+    }
+
+    if (dto.name !== undefined || termChanged) {
       const duplicate =
         await this.prisma.feeStructure.findFirst({
           where: {
@@ -244,8 +271,8 @@ export class FeeStructuresService {
               not: id,
             },
             schoolId,
-            termId: feeStructure.termId,
-            name: dto.name,
+            termId: targetTermId,
+            name: targetName,
           },
         });
 
@@ -261,6 +288,7 @@ export class FeeStructuresService {
         id,
       },
       data: {
+        ...(termChanged ? { termId: targetTermId } : {}),
         ...(dto.name !== undefined
           ? {
               name: dto.name,

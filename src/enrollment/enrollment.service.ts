@@ -41,6 +41,7 @@ export class EnrollmentService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -62,94 +63,84 @@ export class EnrollmentService {
     const membership =
       await this.getMembership(user);
 
-    const student =
-      await this.prisma.student.findFirst({
-        where: {
-          id: dto.studentId,
-          schoolId: membership.schoolId,
-        },
-      });
-
-    if (!student) {
-      throw new NotFoundException(
-        'Student not found',
-      );
-    }
-
-    const schoolClass =
-      await this.prisma.schoolClass.findFirst({
-        where: {
-          id: dto.classId,
-          schoolId: membership.schoolId,
-        },
-        include: {
-          academicSession: true,
-        },
-      });
-
-    if (!schoolClass) {
-      throw new NotFoundException(
-        'Class not found',
-      );
-    }
-
-    const existingEnrollment =
-      await this.prisma.enrollment.findUnique({
-        where: {
-          studentId_academicSessionId: {
-            studentId: student.id,
-            academicSessionId:
-              schoolClass.academicSessionId,
-          },
-        },
-      });
-
-    if (existingEnrollment) {
-      throw new ConflictException(
-        'This student is already enrolled for this academic session',
-      );
-    }
-
-    if (
-      schoolClass.capacity !== null
-    ) {
-      const enrollmentCount =
-        await this.prisma.enrollment.count({
+    return this.prisma.$transaction(
+      async (tx) => {
+        const student = await tx.student.findFirst({
           where: {
-            classId: schoolClass.id,
-            status: EnrollmentStatus.ACTIVE,
+            id: dto.studentId,
+            schoolId: membership.schoolId,
           },
         });
+        if (!student) {
+          throw new NotFoundException('Student not found');
+        }
 
-      if (
-        enrollmentCount >=
-        Number(schoolClass.capacity)
-      ) {
-        throw new ConflictException(
-          'This class has reached its capacity',
-        );
-      }
-    }
+        const schoolClass = await tx.schoolClass.findFirst({
+          where: {
+            id: dto.classId,
+            schoolId: membership.schoolId,
+          },
+          include: { academicSession: true },
+        });
+        if (!schoolClass) {
+          throw new NotFoundException('Class not found');
+        }
+        if (!schoolClass.academicSession.isActive) {
+          throw new ConflictException(
+            'Students can only be enrolled in a class from the active academic session',
+          );
+        }
 
-    return this.prisma.enrollment.create({
-      data: {
-        studentId: student.id,
-        classId: schoolClass.id,
-        academicSessionId:
-          schoolClass.academicSessionId,
-        status: EnrollmentStatus.ACTIVE,
+        const existingEnrollment = await tx.enrollment.findUnique({
+          where: {
+            studentId_academicSessionId: {
+              studentId: student.id,
+              academicSessionId: schoolClass.academicSessionId,
+            },
+          },
+        });
+        if (existingEnrollment) {
+          throw new ConflictException(
+            'This student is already enrolled for this academic session',
+          );
+        }
+
+        if (schoolClass.capacity !== null) {
+          const enrollmentCount = await tx.enrollment.count({
+            where: {
+              classId: schoolClass.id,
+              status: EnrollmentStatus.ACTIVE,
+            },
+          });
+          if (enrollmentCount >= schoolClass.capacity) {
+            throw new ConflictException(
+              'This class has reached its capacity',
+            );
+          }
+        }
+
+        return tx.enrollment.create({
+          data: {
+            studentId: student.id,
+            classId: schoolClass.id,
+            academicSessionId: schoolClass.academicSessionId,
+            status: EnrollmentStatus.ACTIVE,
+          },
+          include: {
+            student: true,
+            class: true,
+            academicSession: true,
+          },
+        });
       },
-      include: {
-        student: true,
-        class: true,
-        academicSession: true,
-      },
-    });
+      { isolationLevel: 'Serializable' },
+    );
   }
 
   async findAll(
     user: RequestUser,
   ) {
+    this.ensureAdmin(user);
     const membership =
       await this.getMembership(user);
 
@@ -174,6 +165,7 @@ export class EnrollmentService {
     user: RequestUser,
     classId: string,
   ) {
+    this.ensureAdmin(user);
     const membership =
       await this.getMembership(user);
 
@@ -211,6 +203,7 @@ export class EnrollmentService {
     user: RequestUser,
     studentId: string,
   ) {
+    this.ensureAdmin(user);
     const membership =
       await this.getMembership(user);
 
@@ -246,6 +239,7 @@ export class EnrollmentService {
     user: RequestUser,
     id: string,
   ) {
+    this.ensureAdmin(user);
     const membership =
       await this.getMembership(user);
 

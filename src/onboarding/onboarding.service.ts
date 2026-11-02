@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  UnauthorizedException,
 } from '@nestjs/common';
 
 import { Prisma, UserRole } from '@prisma/client';
@@ -21,26 +22,27 @@ export class OnboardingService {
     user: RequestUser,
     dto: CreateSchoolOnboardingDto,
   ) {
-    const existingUser =
-      await this.prisma.user.findUnique({
-        where: {
-       id:user.id
-        },
-      });
+    const existingUser = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+      },
+    });
 
-    if (existingUser) {
-      const existingMembership =
-        await this.prisma.schoolMembership.findFirst({
-          where: {
-            userId: existingUser.id,
-          },
-        });
+    if (!existingUser) {
+      throw new UnauthorizedException('User not found');
+    }
 
-      if (existingMembership) {
-        throw new ConflictException(
-          'You already belong to a school',
-        );
-      }
+    const existingMembership = await this.prisma.schoolMembership.findFirst({
+      where: { userId: existingUser.id },
+    });
+
+    if (existingMembership) {
+      throw new ConflictException('You already belong to a school');
     }
 
     const slug = await this.generateUniqueSlug(
@@ -51,19 +53,6 @@ export class OnboardingService {
       const result =
         await this.prisma.$transaction(
           async (tx) => {
-            const applicationUser =
-              existingUser ??
-              (await tx.user.create({
-                data: {
-                  email: user.email,
-                  firstName: 'User',
-                  lastName: 'User',
-                  role: UserRole.SCHOOL_ADMIN,
-                  password: '',
-                  
-                },
-              }));
-
             const school =
               await tx.school.create({
                 data: {
@@ -79,16 +68,36 @@ export class OnboardingService {
             const membership =
               await tx.schoolMembership.create({
                 data: {
-                  userId: applicationUser.id,
+                  userId: existingUser.id,
                   schoolId: school.id,
                   role: UserRole.SCHOOL_ADMIN,
                 },
               });
 
             return {
-              user: applicationUser,
-              school,
-              membership,
+              user: {
+                id: existingUser.id,
+                email: existingUser.email,
+                firstName: existingUser.firstName,
+                lastName: existingUser.lastName,
+                role: existingUser.role,
+              },
+              school: {
+                id: school.id,
+                name: school.name,
+                slug: school.slug,
+                email: school.email,
+                phone: school.phone,
+                address: school.address,
+                website: school.website,
+              },
+              membership: {
+                id: membership.id,
+                userId: membership.userId,
+                schoolId: membership.schoolId,
+                role: membership.role,
+                createdAt: membership.createdAt,
+              },
             };
           },
         );
@@ -139,19 +148,4 @@ export class OnboardingService {
       .replace(/^-+|-+$/g, '');
   }
 
-  private getFirstName(name: string): string {
-    const parts = name.trim().split(/\s+/);
-
-    return parts[0] || 'User';
-  }
-
-  private getLastName(name: string): string {
-    const parts = name.trim().split(/\s+/);
-
-    if (parts.length <= 1) {
-      return '';
-    }
-
-    return parts.slice(1).join(' ');
-  }
 }

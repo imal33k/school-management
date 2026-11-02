@@ -1,4 +1,5 @@
 import {
+  IsUUID,
   IsNumber,
   IsOptional,
   IsString,
@@ -7,7 +8,7 @@ import {
 
 export class UpdateFeeStructureDto {
   @IsOptional()
-  @IsString()
+  @IsUUID()
   termId?: string;
 
   @IsOptional()

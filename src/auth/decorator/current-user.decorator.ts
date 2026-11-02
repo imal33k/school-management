@@ -8,6 +8,7 @@ export interface RequestUser {
   email: string;
   role: UserRole;
   schoolId?: string;
+  mustChangePassword?: boolean;
 }
 
 export const CurrentUser = createParamDecorator(

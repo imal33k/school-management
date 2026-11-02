@@ -21,6 +21,23 @@ import { UpdateResultDto } from './dto/update-result.dto';
 export class ResultsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private async getMembership(user: RequestUser) {
+    const membership = await this.prisma.schoolMembership.findFirst({
+      where: {
+        userId: user.id,
+        ...(user.schoolId ? { schoolId: user.schoolId } : {}),
+      },
+    });
+
+    if (!membership) {
+      throw new ForbiddenException(
+        'You are not a member of the active school',
+      );
+    }
+
+    return membership;
+  }
+
   // --------------------------------------------------
   // CREATE RESULT
   // --------------------------------------------------
@@ -44,6 +61,7 @@ export class ResultsService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -159,6 +177,7 @@ export class ResultsService {
         await this.prisma.teacher.findUnique({
           where: {
             userId: user.id,
+            ...(user.schoolId ? { schoolId: user.schoolId } : {}),
           },
         });
 
@@ -286,31 +305,98 @@ export class ResultsService {
 
 
   async findMine(user: RequestUser) {
-    const student = await this.prisma.student.findFirst({ where: { userId: user.id } });
-    if (!student) throw new NotFoundException('Student profile not found');
-    return this.prisma.result.findMany({ where: { studentId: student.id }, include: { examination: true, subject: true, term: true, teacher: true }, orderBy: { createdAt: 'desc' } });
-  }
-
-  async findAll(user: RequestUser) {
-    const membership =
-      await this.prisma.schoolMembership.findFirst({
-        where: {
-          userId: user.id,
-        },
-      });
-
-    if (!membership) {
+    if (user.role !== UserRole.STUDENT && user.role !== UserRole.PARENT) {
       throw new ForbiddenException(
-        'You are not a member of any school',
+        'Only students and parents can view their own results',
       );
+    }
+
+    const membership = await this.getMembership(user);
+    let studentIds: string[];
+    if (user.role === UserRole.STUDENT) {
+      const student = await this.prisma.student.findFirst({
+        where: { userId: user.id, schoolId: membership.schoolId },
+        select: { id: true },
+      });
+      if (!student) throw new NotFoundException('Student profile not found');
+      studentIds = [student.id];
+    } else {
+      const parent = await this.prisma.parent.findFirst({
+        where: { userId: user.id, schoolId: membership.schoolId },
+        include: { children: { select: { studentId: true } } },
+      });
+      if (!parent) throw new NotFoundException('Parent profile not found');
+      studentIds = parent.children.map(({ studentId }) => studentId);
+      if (!studentIds.length) return [];
     }
 
     return this.prisma.result.findMany({
       where: {
+        studentId: { in: studentIds },
         examination: {
           schoolId: membership.schoolId,
+          status: ExaminationStatus.PUBLISHED,
         },
       },
+      include: {
+        student: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            admissionNumber: true,
+          },
+        },
+        examination: true,
+        subject: true,
+        term: true,
+        teacher: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async findAll(user: RequestUser) {
+    if (
+      user.role !== UserRole.SCHOOL_ADMIN &&
+      user.role !== UserRole.SUPER_ADMIN &&
+      user.role !== UserRole.TEACHER
+    ) {
+      throw new ForbiddenException(
+        'You are not allowed to view all school results',
+      );
+    }
+
+    const membership = await this.getMembership(user);
+    const where: Prisma.ResultWhereInput = {
+      examination: { schoolId: membership.schoolId },
+    };
+
+    if (user.role === UserRole.TEACHER) {
+      const teacher = await this.prisma.teacher.findUnique({
+        where: { userId: user.id },
+        include: { classAssignments: { select: { classId: true } } },
+      });
+
+      if (!teacher) {
+        throw new NotFoundException('Teacher profile not found');
+      }
+
+      const classIds = teacher.classAssignments.map(
+        (assignment) => assignment.classId,
+      );
+      if (classIds.length === 0) {
+        return [];
+      }
+
+      where.examination = {
+        schoolId: membership.schoolId,
+        classId: { in: classIds },
+      };
+    }
+
+    return this.prisma.result.findMany({
+      where,
       include: {
         student: true,
         examination: true,
@@ -332,27 +418,64 @@ export class ResultsService {
     user: RequestUser,
     id: string,
   ) {
-    const membership =
-      await this.prisma.schoolMembership.findFirst({
-        where: {
-          userId: user.id,
-        },
-      });
+    const membership = await this.getMembership(user);
+    const where: Prisma.ResultWhereInput = {
+      id,
+      examination: { schoolId: membership.schoolId },
+    };
 
-    if (!membership) {
-      throw new ForbiddenException(
-        'You are not a member of any school',
-      );
+    if (user.role === UserRole.STUDENT) {
+      const student = await this.prisma.student.findFirst({
+        where: { userId: user.id, schoolId: membership.schoolId },
+        select: { id: true },
+      });
+      if (!student) {
+        throw new NotFoundException('Student profile not found');
+      }
+      where.studentId = student.id;
+      where.examination = {
+        schoolId: membership.schoolId,
+        status: ExaminationStatus.PUBLISHED,
+      };
+    } else if (user.role === UserRole.PARENT) {
+      const parent = await this.prisma.parent.findFirst({
+        where: { userId: user.id, schoolId: membership.schoolId },
+        select: { id: true },
+      });
+      if (!parent) {
+        throw new NotFoundException('Parent profile not found');
+      }
+      where.student = {
+        guardians: { some: { parentId: parent.id } },
+      };
+      where.examination = {
+        schoolId: membership.schoolId,
+        status: ExaminationStatus.PUBLISHED,
+      };
+    } else if (user.role === UserRole.TEACHER) {
+      const teacher = await this.prisma.teacher.findUnique({
+        where: { userId: user.id },
+        include: { classAssignments: { select: { classId: true } } },
+      });
+      if (!teacher) {
+        throw new NotFoundException('Teacher profile not found');
+      }
+      where.examination = {
+        schoolId: membership.schoolId,
+        classId: {
+          in: teacher.classAssignments.map((assignment) => assignment.classId),
+        },
+      };
+    } else if (
+      user.role !== UserRole.SCHOOL_ADMIN &&
+      user.role !== UserRole.SUPER_ADMIN
+    ) {
+      throw new ForbiddenException('You are not allowed to view this result');
     }
 
     const result =
       await this.prisma.result.findFirst({
-        where: {
-          id,
-          examination: {
-            schoolId: membership.schoolId,
-          },
-        },
+        where,
         include: {
           student: true,
           examination: {
@@ -397,6 +520,7 @@ export class ResultsService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 

@@ -16,6 +16,7 @@ import { RequestUser } from '../auth/decorator/current-user.decorator';
 
 import { CreatePlanDto } from './dto/create-plan-status.dto';
 import { UpdatePlanDto } from './dto/update-plan-status.dto';
+import { UpdatePlanStatusDto } from './dto/plan-status.dto';
 
 @Injectable()
 export class PlansService {
@@ -231,7 +232,7 @@ export class PlansService {
 
   async updateStatus(
     id: string,
-    dto: UpdatePlanDto,
+    dto: UpdatePlanStatusDto,
     user: RequestUser,
   ) {
     this.ensureSuperAdmin(user);

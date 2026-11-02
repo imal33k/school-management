@@ -158,17 +158,24 @@ export class TimetableService {
   async findAll(user: RequestUser) {
     const membership =
       await this.getMembership(user);
+    const classIds = await this.getVisibleClassIds(
+      user,
+      membership.schoolId,
+    );
 
     return this.prisma.timetableEntry.findMany({
       where: {
         class: {
           schoolId: membership.schoolId,
+          ...(classIds ? { id: { in: classIds } } : {}),
         },
       },
       include: {
         class: true,
         subject: true,
-        teacher: true,
+        teacher: {
+          select: { id: true, firstName: true, lastName: true },
+        },
       },
       orderBy: [
         {
@@ -187,6 +194,10 @@ export class TimetableService {
   ) {
     const membership =
       await this.getMembership(user);
+    const classIds = await this.getVisibleClassIds(
+      user,
+      membership.schoolId,
+    );
 
     const entry =
       await this.prisma.timetableEntry.findFirst({
@@ -194,12 +205,15 @@ export class TimetableService {
           id,
           class: {
             schoolId: membership.schoolId,
+            ...(classIds ? { id: { in: classIds } } : {}),
           },
         },
         include: {
           class: true,
           subject: true,
-          teacher: true,
+          teacher: {
+            select: { id: true, firstName: true, lastName: true },
+          },
         },
       });
 
@@ -433,7 +447,10 @@ export class TimetableService {
   private async checkAdmin(
     user: RequestUser,
   ) {
-    if (user.role !== UserRole.SCHOOL_ADMIN) {
+    if (
+      user.role !== UserRole.SCHOOL_ADMIN &&
+      user.role !== UserRole.SUPER_ADMIN
+    ) {
       throw new ForbiddenException(
         'Only school administrators can manage the timetable',
       );
@@ -455,6 +472,7 @@ export class TimetableService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -465,5 +483,75 @@ export class TimetableService {
     }
 
     return membership;
+  }
+
+  private async getVisibleClassIds(
+    user: RequestUser,
+    schoolId: string,
+  ): Promise<string[] | undefined> {
+    if (
+      user.role === UserRole.SCHOOL_ADMIN ||
+      user.role === UserRole.SUPER_ADMIN
+    ) {
+      return undefined;
+    }
+
+    if (user.role === UserRole.TEACHER) {
+      const teacher = await this.prisma.teacher.findFirst({
+        where: { userId: user.id, schoolId },
+        include: { classAssignments: { select: { classId: true } } },
+      });
+      if (!teacher) {
+        throw new ForbiddenException('Teacher profile not found');
+      }
+      return teacher.classAssignments.map((assignment) => assignment.classId);
+    }
+
+    if (user.role === UserRole.STUDENT) {
+      const student = await this.prisma.student.findFirst({
+        where: { userId: user.id, schoolId },
+        include: {
+          enrollments: {
+            where: { status: 'ACTIVE' },
+            select: { classId: true },
+          },
+        },
+      });
+      if (!student) {
+        throw new ForbiddenException('Student profile not found');
+      }
+      return student.enrollments.map((enrollment) => enrollment.classId);
+    }
+
+    if (user.role === UserRole.PARENT) {
+      const parent = await this.prisma.parent.findFirst({
+        where: { userId: user.id, schoolId },
+        include: {
+          children: {
+            where: { student: { schoolId } },
+            include: {
+              student: {
+                include: {
+                  enrollments: {
+                    where: { status: 'ACTIVE' },
+                    select: { classId: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+      if (!parent) {
+        throw new ForbiddenException('Parent profile not found');
+      }
+      return parent.children.flatMap((child) =>
+        child.student.enrollments.map((enrollment) => enrollment.classId),
+      );
+    }
+
+    throw new ForbiddenException(
+      'You are not allowed to view the timetable',
+    );
   }
 }

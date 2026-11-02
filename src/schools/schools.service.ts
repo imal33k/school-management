@@ -5,22 +5,31 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import {
-  Prisma,
-  SchoolStatus,
-  UserRole,
-} from '@prisma/client';
+import { SchoolStatus, UserRole } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { RequestUser } from '../auth/decorator/current-user.decorator';
 
 import { UpdateSchoolDto } from './dto/update-school.dto';
+import { CreatePaystackSubaccountDto } from './dto/create-paystack-subaccount.dto';
+import { PaystackService } from '../payments/paystack.service';
 
 @Injectable()
 export class SchoolsService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly paystack: PaystackService,
   ) {}
+
+  private formatSchool<T extends { paystackSubaccountCode: string | null }>(
+    school: T,
+  ) {
+    const { paystackSubaccountCode, ...safeSchool } = school;
+    return {
+      ...safeSchool,
+      hasPaystackSubaccount: Boolean(paystackSubaccountCode),
+    };
+  }
 
   private async getSchoolId(
     user: RequestUser,
@@ -29,6 +38,7 @@ export class SchoolsService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -84,7 +94,80 @@ export class SchoolsService {
       );
     }
 
-    return school;
+    return this.formatSchool(school);
+  }
+
+  async createPaystackSubaccount(
+    dto: CreatePaystackSubaccountDto,
+    user: RequestUser,
+  ) {
+    if (user.role !== UserRole.SCHOOL_ADMIN) {
+      throw new ForbiddenException(
+        'Only school administrators can configure school settlement',
+      );
+    }
+    const schoolId = await this.getSchoolId(user);
+    const school = await this.prisma.school.findUnique({
+      where: { id: schoolId },
+      select: {
+        id: true,
+        paystackSubaccountCode: true,
+        paystackSubaccountSetupStartedAt: true,
+      },
+    });
+    if (!school) {
+      throw new NotFoundException('School not found');
+    }
+    if (school.paystackSubaccountCode) {
+      throw new ConflictException(
+        'A Paystack settlement account is already configured for this school',
+      );
+    }
+
+    const claimedAt = new Date();
+    const staleClaimBefore = new Date(
+      claimedAt.getTime() - 10 * 60 * 1000,
+    );
+    const claimed = await this.prisma.school.updateMany({
+      where: {
+        id: schoolId,
+        paystackSubaccountCode: null,
+        OR: [
+          { paystackSubaccountSetupStartedAt: null },
+          { paystackSubaccountSetupStartedAt: { lt: staleClaimBefore } },
+        ],
+      },
+      data: { paystackSubaccountSetupStartedAt: claimedAt },
+    });
+    if (!claimed.count) {
+      throw new ConflictException(
+        'Settlement setup is already in progress; wait ten minutes before retrying',
+      );
+    }
+
+    const subaccountCode = await this.paystack.createSubaccount({
+      businessName: dto.accountName,
+      settlementBank: dto.settlementBank,
+      accountNumber: dto.accountNumber,
+    });
+    const saved = await this.prisma.school.updateMany({
+      where: {
+        id: schoolId,
+        paystackSubaccountCode: null,
+        paystackSubaccountSetupStartedAt: claimedAt,
+      },
+      data: {
+        paystackSubaccountCode: subaccountCode,
+        paystackSubaccountSetupStartedAt: null,
+      },
+    });
+    if (!saved.count) {
+      throw new ConflictException(
+        'Settlement configuration changed while processing; contact support before retrying',
+      );
+    }
+
+    return { configured: true };
   }
 
   async findOne(
@@ -116,7 +199,7 @@ export class SchoolsService {
         );
       }
 
-      return school;
+      return this.formatSchool(school);
     }
 
     const schoolId =
@@ -152,7 +235,7 @@ export class SchoolsService {
       );
     }
 
-    return school;
+    return this.formatSchool(school);
   }
 
   async updateMine(
@@ -177,7 +260,7 @@ export class SchoolsService {
       );
     }
 
-    return this.prisma.school.update({
+    const updated = await this.prisma.school.update({
       where: {
         id: schoolId,
       },
@@ -219,6 +302,7 @@ export class SchoolsService {
           : {}),
       },
     });
+    return this.formatSchool(updated);
   }
 
   async updateStatus(
@@ -245,7 +329,7 @@ export class SchoolsService {
       );
     }
 
-    return this.prisma.school.update({
+    const updated = await this.prisma.school.update({
       where: {
         id,
       },
@@ -253,6 +337,7 @@ export class SchoolsService {
         status,
       },
     });
+    return this.formatSchool(updated);
   }
 
   async findAll(
@@ -264,7 +349,7 @@ export class SchoolsService {
       );
     }
 
-    return this.prisma.school.findMany({
+    const schools = await this.prisma.school.findMany({
       include: {
         _count: {
           select: {
@@ -285,5 +370,6 @@ export class SchoolsService {
         createdAt: 'desc',
       },
     });
+    return schools.map((school) => this.formatSchool(school));
   }
 }

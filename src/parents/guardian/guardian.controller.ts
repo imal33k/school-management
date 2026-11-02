@@ -9,6 +9,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 
 import { GuardianService } from './guardian.service';
 
@@ -20,6 +21,7 @@ import {
   CurrentUser,
   type RequestUser,
 } from '../../auth/decorator/current-user.decorator';
+import { Roles } from '../../auth/decorator/roles.decorator';
 
 @Controller('parents')
 export class GuardianController {
@@ -28,6 +30,7 @@ export class GuardianController {
   ) {}
 
   @Post()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   create(
     @CurrentUser() user: RequestUser,
     @Body() dto: CreateParentDto,
@@ -39,9 +42,11 @@ export class GuardianController {
   }
 
   @Get('me')
+  @Roles(UserRole.PARENT)
   me(@CurrentUser() user: RequestUser) { return this.parentService.findMe(user); }
 
   @Get()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   findAll(
 
     @CurrentUser() user: RequestUser,
@@ -51,6 +56,7 @@ export class GuardianController {
   }
 
   @Get(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN, UserRole.PARENT)
   findOne(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -62,6 +68,7 @@ export class GuardianController {
   }
 
   @Patch(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   update(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -75,6 +82,7 @@ export class GuardianController {
   }
 
   @Delete(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   remove(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -86,6 +94,7 @@ export class GuardianController {
   }
 
   @Post(':id/students')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   linkStudent(
     @CurrentUser() user: RequestUser,
     @Param('id') parentId: string,
@@ -99,6 +108,7 @@ export class GuardianController {
   }
 
   @Delete(':id/students/:studentId')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   unlinkStudent(
     @CurrentUser() user: RequestUser,
     @Param('id') parentId: string,

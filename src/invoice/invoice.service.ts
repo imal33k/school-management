@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -9,8 +10,10 @@ import { PrismaService } from '../prisma/prisma.service';
 
 import {
   InvoiceStatus,
+  Prisma,
   UserRole,
 } from '@prisma/client';
+import { randomBytes } from 'crypto';
 
 import type { RequestUser } from '../auth/decorator/current-user.decorator';
 
@@ -119,36 +122,39 @@ export class InvoiceService {
     // GENERATE INVOICE NUMBER
     // =========================
 
-    const invoiceNumber =
-      await this.generateInvoiceNumber(
-        membership.schoolId,
-      );
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        return await this.prisma.invoice.create({
+          data: {
+            schoolId: membership.schoolId,
+            studentId: student.id,
+            termId: term.id,
+            feeStructureId,
+            invoiceNumber: this.generateInvoiceNumber(),
+            amount,
+            amountPaid: 0,
+            status: InvoiceStatus.UNPAID,
+            dueDate: dto.dueDate
+              ? new Date(dto.dueDate)
+              : undefined,
+          },
+          include: {
+            student: true,
+            term: true,
+            feeStructure: true,
+            payments: true,
+          },
+        });
+      } catch (error) {
+        if (!this.isInvoiceNumberCollision(error)) {
+          throw error;
+        }
+      }
+    }
 
-    // =========================
-    // CREATE INVOICE
-    // =========================
-
-    return this.prisma.invoice.create({
-      data: {
-        schoolId: membership.schoolId,
-        studentId: student.id,
-        termId: term.id,
-        feeStructureId,
-        invoiceNumber,
-        amount,
-        amountPaid: 0,
-        status: InvoiceStatus.UNPAID,
-        dueDate: dto.dueDate
-          ? new Date(dto.dueDate)
-          : undefined,
-      },
-      include: {
-        student: true,
-        term: true,
-        feeStructure: true,
-        payments: true,
-      },
-    });
+    throw new ConflictException(
+      'Unable to allocate a unique invoice number; please retry',
+    );
   }
 
 
@@ -169,8 +175,7 @@ export class InvoiceService {
   // =========================
 
   async findAll(user: RequestUser, query: PaginationQueryDto = new PaginationQueryDto()) {
-    const membership =
-      await this.getAdminMembership(user);
+    const membership = await this.getFinancialStaffMembership(user);
 
     const where: any = { schoolId: membership.schoolId, ...(query.search ? { OR: [{ invoiceNumber: { contains: query.search, mode: 'insensitive' } }, { student: { firstName: { contains: query.search, mode: 'insensitive' } } }, { student: { lastName: { contains: query.search, mode: 'insensitive' } } }] } : {}) };
     const page = query.getPage(); const limit = query.getLimit();
@@ -197,8 +202,7 @@ export class InvoiceService {
     user: RequestUser,
     id: string,
   ) {
-    const membership =
-      await this.getAdminMembership(user);
+    const membership = await this.getFinancialStaffMembership(user);
 
     const invoice =
       await this.prisma.invoice.findFirst({
@@ -310,7 +314,7 @@ export class InvoiceService {
       );
     }
 
-    if (invoice.amountPaid.toNumber() > 0) {
+    if (invoice.amountPaid.greaterThan(0)) {
       throw new BadRequestException(
         'An invoice with payments cannot be deleted',
       );
@@ -333,40 +337,67 @@ export class InvoiceService {
     };
   }
 
+  async cancel(user: RequestUser, id: string) {
+    await this.checkAdmin(user);
+    const membership = await this.getAdminMembership(user);
+
+    return this.prisma.$transaction(
+      async (tx) => {
+        const invoice = await tx.invoice.findFirst({
+          where: { id, schoolId: membership.schoolId },
+        });
+        if (!invoice) {
+          throw new NotFoundException('Invoice not found');
+        }
+        if (invoice.status === InvoiceStatus.CANCELLED) {
+          return invoice;
+        }
+        if (invoice.status === InvoiceStatus.PAID) {
+          throw new ConflictException('A paid invoice cannot be cancelled');
+        }
+        const activePayment = await tx.payment.findFirst({
+          where: {
+            invoiceId: invoice.id,
+            status: { in: ['PENDING', 'SUCCESSFUL'] },
+          },
+          select: { id: true },
+        });
+        if (activePayment) {
+          throw new ConflictException(
+            'An invoice with pending or successful payments cannot be cancelled',
+          );
+        }
+        return tx.invoice.update({
+          where: { id: invoice.id },
+          data: { status: InvoiceStatus.CANCELLED },
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  }
+
   // =========================
   // GENERATE INVOICE NUMBER
   // =========================
 
-  private async generateInvoiceNumber(
-    schoolId: string,
-  ): Promise<string> {
+  private generateInvoiceNumber(): string {
     const year = new Date().getFullYear();
+    return `INV-${year}-${randomBytes(8).toString('hex').toUpperCase()}`;
+  }
 
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const random =
-        Math.floor(
-          100000 + Math.random() * 900000,
-        );
-
-      const invoiceNumber =
-        `INV-${year}-${random}`;
-
-      const existing =
-        await this.prisma.invoice.findFirst({
-          where: {
-            schoolId,
-            invoiceNumber,
-          },
-        });
-
-      if (!existing) {
-        return invoiceNumber;
-      }
+  private isInvoiceNumberCollision(error: unknown): boolean {
+    if (
+      !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+      error.code !== 'P2002'
+    ) {
+      return false;
     }
 
-    throw new BadRequestException(
-      'Unable to generate a unique invoice number',
-    );
+    const target = error.meta?.target;
+    const fields = Array.isArray(target)
+      ? target.map(String)
+      : [String(target ?? '')];
+    return fields.some((field) => field.includes('invoiceNumber'));
   }
 
   // =========================
@@ -403,6 +434,36 @@ export class InvoiceService {
     if (!membership) {
       throw new ForbiddenException(
         'You are not a school administrator',
+      );
+    }
+
+    return membership;
+  }
+
+  private async getFinancialStaffMembership(user: RequestUser) {
+    if (
+      user.role !== UserRole.SCHOOL_ADMIN &&
+      user.role !== UserRole.ACCOUNTANT &&
+      user.role !== UserRole.SUPER_ADMIN
+    ) {
+      throw new ForbiddenException(
+        'Only school administrators and accountants can view all invoices',
+      );
+    }
+
+    const membership = await this.prisma.schoolMembership.findFirst({
+      where: {
+        userId: user.id,
+        ...(user.schoolId ? { schoolId: user.schoolId } : {}),
+        role: {
+          in: [UserRole.SCHOOL_ADMIN, UserRole.ACCOUNTANT, UserRole.SUPER_ADMIN],
+        },
+      },
+    });
+
+    if (!membership) {
+      throw new ForbiddenException(
+        'You are not financial staff for the active school',
       );
     }
 

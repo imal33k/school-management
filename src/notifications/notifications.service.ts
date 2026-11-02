@@ -49,7 +49,7 @@ export class NotificationService {
 
   async findAll(user: RequestUser) {
     const membership =
-      await this.getMembership(user);
+      await this.getAdminMembership(user);
 
     return this.prisma.notification.findMany({
       where: {
@@ -69,7 +69,7 @@ export class NotificationService {
     id: string,
   ) {
     const membership =
-      await this.getMembership(user);
+      await this.getAdminMembership(user);
 
     const notification =
       await this.prisma.notification.findFirst({
@@ -139,9 +139,11 @@ export class NotificationService {
   async myNotifications(
     user: RequestUser,
   ) {
+    const membership = await this.getMembership(user);
     return this.prisma.notificationRecipient.findMany({
       where: {
         userId: user.id,
+        notification: { schoolId: membership.schoolId },
       },
       include: {
         notification: true,
@@ -161,6 +163,7 @@ export class NotificationService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -176,7 +179,10 @@ export class NotificationService {
   private async getAdminMembership(
     user: RequestUser,
   ) {
-    if (user.role !== UserRole.SCHOOL_ADMIN) {
+    if (
+      user.role !== UserRole.SCHOOL_ADMIN &&
+      user.role !== UserRole.SUPER_ADMIN
+    ) {
       throw new ForbiddenException(
         'Only school administrators can manage notifications',
       );

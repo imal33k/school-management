@@ -7,99 +7,122 @@ datasource db {
 }
 
 model School {
-  id                   String                @id @default(uuid())
-  name                 String
-  slug                 String                @unique
-  email                String?
-  phone                String?
-  address              String?
-  website              String?
-  logoUrl              String?
-  status               SchoolStatus          @default(ACTIVE)
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
-  academicSessions     AcademicSession[]
-  announcements        Announcement[]
-  auditLogs            AuditLog[]
-  examinations         Examination[]
-  feeStructures        FeeStructure[]
-  invoices             Invoice[]
-  notifications        Notification[]
-  parents              Parent[]
-  classes              SchoolClass[]
-  memberships          SchoolMembership[]
-  students             Student[]
-  subjects             Subject[]
-  subscription         Subscription?
-  subscriptionPayments SubscriptionPayment[]
-  teachers             Teacher[]
-  invitations          SchoolInvitation[]
+  id                               String                @id @default(uuid())
+  name                             String
+  slug                             String                @unique
+  email                            String?
+  phone                            String?
+  address                          String?
+  website                          String?
+  logoUrl                          String?
+  paystackSubaccountCode           String?
+  paystackSubaccountSetupStartedAt DateTime?
+  status                           SchoolStatus          @default(ACTIVE)
+  createdAt                        DateTime              @default(now())
+  updatedAt                        DateTime              @updatedAt
+  academicSessions                 AcademicSession[]
+  announcements                    Announcement[]
+  auditLogs                        AuditLog[]
+  examinations                     Examination[]
+  feeStructures                    FeeStructure[]
+  invoices                         Invoice[]
+  notifications                    Notification[]
+  parents                          Parent[]
+  classes                          SchoolClass[]
+  memberships                      SchoolMembership[]
+  students                         Student[]
+  subjects                         Subject[]
+  subscription                     Subscription?
+  subscriptionPayments             SubscriptionPayment[]
+  teachers                         Teacher[]
+  invitations                      SchoolInvitation[]
 }
 
 model User {
-  id                   String                  @id @default(uuid())
-  schoolemail                String                  @unique
-  schoolName            String
-  phone                String?
-  role                 UserRole
-  status               UserStatus              @default(ACTIVE)
-  createdAt            DateTime                @default(now())
-  updatedAt            DateTime                @updatedAt
-  password             String
-  auditLogs            AuditLog[]              @relation("AuditActor")
-  notifications        NotificationRecipient[]
-  parentProfile        Parent?
-  memberships          SchoolMembership[]
-  studentProfile       Student?
-  teacherProfile       Teacher?
-  passwordResetTokens  PasswordResetToken[]
-  refreshTokens        RefreshToken[]
-  sentSchoolInvitations SchoolInvitation[] @relation("SchoolInvitationCreator")
+  id                      String                   @id @default(uuid())
+  email                   String                   @unique
+  firstName               String
+  lastName                String
+  phone                   String?
+  role                    UserRole
+  status                  UserStatus               @default(ACTIVE)
+  mustChangePassword      Boolean                  @default(false)
+  emailVerifiedAt         DateTime?
+  failedLoginAttempts     Int                      @default(0)
+  lockedUntil             DateTime?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  password                String
+  auditLogs               AuditLog[]               @relation("AuditActor")
+  notifications           NotificationRecipient[]
+  parentProfile           Parent?
+  memberships             SchoolMembership[]
+  studentProfile          Student?
+  teacherProfile          Teacher?
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  refreshTokens           RefreshToken[]
+  sentSchoolInvitations   SchoolInvitation[]       @relation("SchoolInvitationCreator")
 }
 
 model PasswordResetToken {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
 }
 
 model RefreshToken {
-  id             String    @id @default(uuid())
-  userId         String
-  tokenHash      String    @unique
-  expiresAt      DateTime
-  revokedAt      DateTime?
-  replacedById   String?
-  createdAt      DateTime  @default(now())
-  lastUsedAt     DateTime?
-  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id           String    @id @default(uuid())
+  userId       String
+  familyId     String
+  tokenHash    String    @unique
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([familyId])
   @@index([expiresAt])
   @@index([revokedAt])
 }
 
+model EmailVerificationToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
 model SchoolInvitation {
-  id             String    @id @default(uuid())
-  schoolId       String
-  createdById    String
-  email          String
-  role           UserRole
-  employeeId     String?
+  id              String    @id @default(uuid())
+  schoolId        String
+  createdById     String
+  email           String
+  role            UserRole
+  employeeId      String?
   admissionNumber String?
-  tokenHash      String    @unique
-  expiresAt      DateTime
-  acceptedAt     DateTime?
-  createdAt      DateTime  @default(now())
-  school         School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  createdBy      User      @relation("SchoolInvitationCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  tokenHash       String    @unique
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  school          School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  createdBy       User      @relation("SchoolInvitationCreator", fields: [createdById], references: [id], onDelete: Cascade)
 
   @@index([schoolId, email])
   @@index([expiresAt])

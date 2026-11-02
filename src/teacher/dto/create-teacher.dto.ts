@@ -18,9 +18,8 @@ export class CreateTeacherDto {
   @MinLength(2)
   employeeId!: string;
 
-  @IsOptional()
   @IsEmail()
-  email?: string;
+  email!: string;
 
   @IsOptional()
   @IsString()

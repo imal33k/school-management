@@ -43,5 +43,4 @@ export class UpdatePlanDto {
   @IsNumber()
   @Min(1)
   maxParents?: number;
-    isActive: any;
 }

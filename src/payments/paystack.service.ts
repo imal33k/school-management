@@ -89,6 +89,7 @@ export class PaystackService {
     reference: string;
     callbackUrl?: string;
     metadata?: Record<string, unknown>;
+    subaccountCode?: string;
   }): Promise<PaystackInitializeResult> {
     if (!Number.isFinite(input.amount) || input.amount <= 0) {
       throw new BadGatewayException('Payment amount must be positive');
@@ -100,6 +101,12 @@ export class PaystackService {
       reference: input.reference,
       callback_url: input.callbackUrl,
       metadata: input.metadata,
+      ...(input.subaccountCode
+        ? {
+            subaccount: input.subaccountCode,
+            bearer: 'subaccount',
+          }
+        : {}),
     });
 
     if (
@@ -117,6 +124,27 @@ export class PaystackService {
       access_code: data.access_code,
       reference: data.reference,
     };
+  }
+
+  async createSubaccount(input: {
+    businessName: string;
+    settlementBank: string;
+    accountNumber: string;
+  }): Promise<string> {
+    const data = await this.request('/subaccount', 'POST', {
+      business_name: input.businessName,
+      settlement_bank: input.settlementBank,
+      account_number: input.accountNumber,
+      percentage_charge: 0,
+    });
+
+    if (typeof data.subaccount_code !== 'string') {
+      throw new BadGatewayException(
+        'Paystack returned an incomplete subaccount response',
+      );
+    }
+
+    return data.subaccount_code;
   }
 
   async verify(reference: string): Promise<PaystackVerifyResult> {

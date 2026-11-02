@@ -4,7 +4,9 @@ import {
   Get,
   Param,
   Patch,
+  Post,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 
 import {
   SchoolStatus,
@@ -12,6 +14,8 @@ import {
 
 import { SchoolsService } from './schools.service';
 import { UpdateSchoolDto } from './dto/update-school.dto';
+import { CreatePaystackSubaccountDto } from './dto/create-paystack-subaccount.dto';
+import { Roles } from '../auth/decorator/roles.decorator';
 
 import {
   CurrentUser,
@@ -54,6 +58,7 @@ export class SchoolsController {
   }
 
   @Patch('me')
+  @Roles(UserRole.SCHOOL_ADMIN)
   updateMine(
     @Body() dto: UpdateSchoolDto,
     @CurrentUser() user: RequestUser,
@@ -62,6 +67,15 @@ export class SchoolsController {
       dto,
       user,
     );
+  }
+
+  @Post('me/paystack-subaccount')
+  @Roles(UserRole.SCHOOL_ADMIN)
+  createPaystackSubaccount(
+    @Body() dto: CreatePaystackSubaccountDto,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.schoolsService.createPaystackSubaccount(dto, user);
   }
 
   @Patch(':id/status')

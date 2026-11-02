@@ -49,15 +49,33 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Invalid authorization format');
     }
 
-    let payload: { sub?: string; tokenType?: string };
+    let payload: { sub?: string; tokenType?: string; sessionId?: string };
     try {
       payload = await this.jwtService.verifyAsync(token);
     } catch {
       throw new UnauthorizedException('Invalid or expired token');
     }
 
-    if (!payload.sub || payload.tokenType !== 'access') {
+    if (
+      !payload.sub ||
+      payload.tokenType !== 'access' ||
+      typeof payload.sessionId !== 'string'
+    ) {
       throw new UnauthorizedException('Invalid token payload');
+    }
+
+    const activeSession = await this.prisma.refreshToken.findFirst({
+      where: {
+        userId: payload.sub,
+        familyId: payload.sessionId,
+        revokedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      select: { id: true },
+    });
+
+    if (!activeSession) {
+      throw new UnauthorizedException('This session is no longer active');
     }
 
     const dbUser = await this.prisma.user.findUnique({
@@ -80,6 +98,17 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('This account is not active');
     }
 
+    if (
+      dbUser.mustChangePassword &&
+      !['/auth/change-password', '/auth/me', '/auth/logout'].includes(
+        request.path,
+      )
+    ) {
+      throw new ForbiddenException(
+        'Change your temporary password before accessing school features',
+      );
+    }
+
     const membership = dbUser.memberships[0];
     const role =
       dbUser.role === UserRole.SUPER_ADMIN
@@ -93,6 +122,7 @@ export class JwtAuthGuard implements CanActivate {
       email: dbUser.email,
       role,
       schoolId: membership?.schoolId,
+      mustChangePassword: dbUser.mustChangePassword,
     };
 
     if (role !== UserRole.SUPER_ADMIN && membership) {

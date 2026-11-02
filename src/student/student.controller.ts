@@ -9,6 +9,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 
 import { StudentService } from './student.service';
 
@@ -19,6 +20,7 @@ import {
   CurrentUser,
   type RequestUser,
 } from '../auth/decorator/current-user.decorator';
+import { Roles } from '../auth/decorator/roles.decorator';
 
 @Controller('students')
 export class StudentController {
@@ -26,6 +28,7 @@ export class StudentController {
     private readonly studentService: StudentService,
   ) {}
 
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   @Post()
   create(
     @CurrentUser() user: RequestUser,
@@ -37,9 +40,22 @@ export class StudentController {
     );
   }
 
+  @Roles(UserRole.STUDENT)
   @Get('me')
-  me(@CurrentUser() user: RequestUser) { return this.studentService.findMe(user); }
+  me(@CurrentUser() user: RequestUser) {
+    return this.studentService.findMe(user);
+  }
 
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN, UserRole.TEACHER)
+  @Get('class/:classId')
+  findByClass(
+    @CurrentUser() user: RequestUser,
+    @Param('classId') classId: string,
+  ) {
+    return this.studentService.findByClass(user, classId);
+  }
+
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN, UserRole.TEACHER)
   @Get()
   findAll(
 
@@ -49,6 +65,12 @@ export class StudentController {
     return this.studentService.findAll(user, query);
   }
 
+  @Roles(
+    UserRole.SCHOOL_ADMIN,
+    UserRole.SUPER_ADMIN,
+    UserRole.TEACHER,
+    UserRole.STUDENT,
+  )
   @Get(':id')
   findOne(
     @CurrentUser() user: RequestUser,
@@ -60,6 +82,7 @@ export class StudentController {
     );
   }
 
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id')
   update(
     @CurrentUser() user: RequestUser,
@@ -73,6 +96,7 @@ export class StudentController {
     );
   }
 
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   @Delete(':id')
   remove(
     @CurrentUser() user: RequestUser,

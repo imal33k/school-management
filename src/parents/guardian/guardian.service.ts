@@ -42,6 +42,7 @@ export class GuardianService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -95,14 +96,20 @@ export class GuardianService {
 
 
   async findMe(user: RequestUser) {
-    const parent = await this.prisma.parent.findFirst({ where: { userId: user.id }, include: {
-      children: { include: { student: { include: { enrollments: { include: { class: true, academicSession: true } }, results: { include: { examination: true, subject: true, term: true } }, attendance: { orderBy: { date: 'desc' }, take: 100 }, invoices: { include: { term: true, payments: true, feeStructure: true } } } } } },
+    if (user.role !== UserRole.PARENT) {
+      throw new ForbiddenException('Only parents can view their family profile');
+    }
+
+    const membership = await this.getMembership(user);
+    const parent = await this.prisma.parent.findFirst({ where: { userId: user.id, schoolId: membership.schoolId }, include: {
+      children: { include: { student: { include: { enrollments: { include: { class: true, academicSession: true } }, results: { where: { examination: { status: 'PUBLISHED' } }, include: { examination: true, subject: true, term: true } }, attendance: { orderBy: { date: 'desc' }, take: 100 }, invoices: { include: { term: true, payments: true, feeStructure: true } } } } } },
     }});
     if (!parent) throw new NotFoundException('Parent profile not found');
     return parent;
   }
 
   async findAll(user: RequestUser, query: PaginationQueryDto = new PaginationQueryDto()) {
+    this.ensureAdmin(user);
     const membership =
       await this.getMembership(user);
 
@@ -132,6 +139,14 @@ export class GuardianService {
     user: RequestUser,
     id: string,
   ) {
+    if (
+      user.role !== UserRole.SCHOOL_ADMIN &&
+      user.role !== UserRole.SUPER_ADMIN &&
+      user.role !== UserRole.PARENT
+    ) {
+      throw new ForbiddenException('You are not allowed to view this parent');
+    }
+
     const membership =
       await this.getMembership(user);
 
@@ -140,6 +155,7 @@ export class GuardianService {
         where: {
           id,
           schoolId: membership.schoolId,
+          ...(user.role === UserRole.PARENT ? { userId: user.id } : {}),
         },
         include: {
           children: {

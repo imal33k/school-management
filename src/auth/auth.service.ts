@@ -1,7 +1,7 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
-  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 
@@ -15,11 +15,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 
 import { JwtService } from '@nestjs/jwt';
-import { UserRole } from '@prisma/client';
-import { createHash, randomBytes } from 'crypto';
+import { Prisma, UserRole } from '@prisma/client';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { EmailService } from '../common/email.service';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
 
 @Injectable()
 export class AuthService {
@@ -29,12 +30,16 @@ export class AuthService {
     private readonly email: EmailService,
   ) {}
 
-  private buildAccessTokenPayload(user: { id: string; email: string; role: UserRole }) {
+  private buildAccessTokenPayload(
+    user: { id: string; email: string; role: UserRole },
+    sessionId: string,
+  ) {
     return {
       sub: user.id,
       email: user.email,
       role: user.role,
       tokenType: 'access',
+      sessionId,
     };
   }
 
@@ -42,36 +47,85 @@ export class AuthService {
     return createHash('sha256').update(token).digest('hex');
   }
 
-  private resolveLoginEmail(dto: LoginDto) {
-    return dto.email ?? dto.schoolemail;
+  private resolveLoginEmail(dto: LoginDto): string {
+    const email = dto.email ?? dto.schoolemail;
+    if (!email) {
+      throw new BadRequestException('Email is required');
+    }
+    return email;
   }
 
-  private normalizeRegisterDto(dto: RegisterDto) {
-    const email = dto.email ?? dto.schoolemail;
-    const schoolName = dto.schoolName?.trim() || dto.schooladdress?.trim() || 'School';
-    const nameParts = schoolName.split(/\s+/).filter(Boolean);
-    const firstName = dto.firstName?.trim() || nameParts[0] || 'School';
-    const lastName =
-      dto.lastName?.trim() ||
-      nameParts.slice(1).join(' ') ||
-      'Admin';
+  private getFrontendUrl() {
+    return (process.env.FRONTEND_URL ?? 'http://localhost:5173').replace(
+      /\/$/,
+      '',
+    );
+  }
 
-    return {
-      email,
-      firstName,
-      lastName,
-      phone: dto.phone,
-    };
+  private isEmailVerificationBypassed() {
+    return (
+      process.env.NODE_ENV === 'development' &&
+      process.env.SKIP_EMAIL_VERIFICATION === 'true'
+    );
+  }
+
+  private async sendVerificationEmail(userId: string, email: string) {
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = this.hashToken(rawToken);
+    await this.prisma.$transaction([
+      this.prisma.emailVerificationToken.deleteMany({
+        where: { userId, usedAt: null },
+      }),
+      this.prisma.emailVerificationToken.create({
+        data: {
+          userId,
+          tokenHash,
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        },
+      }),
+    ]);
+
+    try {
+      await this.email.send(
+        email,
+        'Verify your schoolhouse email',
+        `Verify your email within one hour: ${this.getFrontendUrl()}/verify-email?token=${rawToken}`,
+      );
+    } catch (error) {
+      await this.prisma.emailVerificationToken.deleteMany({
+        where: { tokenHash },
+      });
+      throw error;
+    }
+  }
+
+  private async generateSchoolSlug(name: string): Promise<string> {
+    const baseSlug = name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    let slug = baseSlug;
+    let suffix = 1;
+
+    while (await this.prisma.school.findUnique({ where: { slug } })) {
+      slug = `${baseSlug}-${suffix}`;
+      suffix += 1;
+    }
+
+    return slug;
   }
 
   private async issueRefreshToken(userId: string) {
     const refreshToken = randomBytes(32).toString('hex');
     const tokenHash = this.hashToken(refreshToken);
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const familyId = randomUUID();
 
     await this.prisma.refreshToken.create({
       data: {
         userId,
+        familyId,
         tokenHash,
         expiresAt,
       },
@@ -80,15 +134,19 @@ export class AuthService {
     return {
       refreshToken,
       expiresAt,
+      familyId,
     };
   }
 
   async register(registerDto: RegisterDto) {
-    const normalized = this.normalizeRegisterDto(registerDto);
+    const skipEmailVerification = this.isEmailVerificationBypassed();
+    if (!skipEmailVerification) {
+      this.email.assertConfigured();
+    }
 
     const existingUser = await this.prisma.user.findUnique({
       where: {
-        email: normalized.email,
+        email: registerDto.schoolemail,
       },
     });
 
@@ -97,25 +155,150 @@ export class AuthService {
     }
 
     const hashedPassword = await bcrypt.hash(registerDto.password, 10);
+    const slug = await this.generateSchoolSlug(registerDto.schoolName);
 
-    const user = await this.prisma.user.create({
-      data: {
-        email: normalized.email,
-        password: hashedPassword,
-        firstName: normalized.firstName,
-        lastName: normalized.lastName,
-        phone: normalized.phone,
-        role: UserRole.SCHOOL_ADMIN,
-      },
+    let createdAccount: {
+      id: string;
+      email: string;
+      firstName: string;
+      lastName: string;
+      phone: string | null;
+      role: UserRole;
+      school: { id: string; name: string; address: string | null };
+    };
+    try {
+      createdAccount = await this.prisma.$transaction(async (tx) => {
+        const user = await tx.user.create({
+          data: {
+            email: registerDto.schoolemail,
+            password: hashedPassword,
+            firstName: 'School',
+            lastName: 'Admin',
+            phone: registerDto.phone,
+            role: UserRole.SCHOOL_ADMIN,
+            emailVerifiedAt: skipEmailVerification ? new Date() : null,
+          },
+        });
+
+        const school = await tx.school.create({
+          data: {
+            name: registerDto.schoolName,
+            slug,
+            email: registerDto.schoolemail,
+            phone: registerDto.phone,
+            address: registerDto.schooladdress,
+          },
+        });
+
+        await tx.schoolMembership.create({
+          data: {
+            userId: user.id,
+            schoolId: school.id,
+            role: UserRole.SCHOOL_ADMIN,
+          },
+        });
+
+        return {
+          id: user.id,
+          email: user.email,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          phone: user.phone,
+          role: user.role,
+          school: {
+            id: school.id,
+            name: school.name,
+            address: school.address,
+          },
+        };
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          'A user or school with this information already exists',
+        );
+      }
+      throw error;
+    }
+
+    if (skipEmailVerification) {
+      return {
+        message:
+          'Account created. Email verification is disabled for this development environment.',
+      };
+    }
+
+    await this.sendVerificationEmail(createdAccount.id, createdAccount.email);
+    return {
+      message: 'Check your email for a verification link before signing in.',
+    };
+  }
+
+  async verifyEmail(dto: VerifyEmailDto) {
+    const tokenHash = this.hashToken(dto.token);
+    const now = new Date();
+    const token = await this.prisma.emailVerificationToken.findFirst({
+      where: { tokenHash, usedAt: null, expiresAt: { gt: now } },
+      select: { id: true, userId: true },
+    });
+    if (!token) {
+      throw new UnauthorizedException(
+        'Email verification link is invalid or expired',
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const consumed = await tx.emailVerificationToken.updateMany({
+        where: {
+          id: token.id,
+          usedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { usedAt: now },
+      });
+      if (consumed.count !== 1) {
+        throw new UnauthorizedException(
+          'Email verification link is invalid or expired',
+        );
+      }
+
+      await tx.user.update({
+        where: { id: token.userId },
+        data: {
+          emailVerifiedAt: now,
+          failedLoginAttempts: 0,
+          lockedUntil: null,
+        },
+      });
+      await tx.emailVerificationToken.deleteMany({
+        where: { userId: token.userId, id: { not: token.id } },
+      });
     });
 
+    return { message: 'Email verified. You can now sign in.' };
+  }
+
+  async resendEmailVerification(email: string) {
+    if (this.isEmailVerificationBypassed()) {
+      return {
+        message: 'Email verification is disabled for this development environment.',
+      };
+    }
+
+    this.email.assertConfigured();
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true, email: true, emailVerifiedAt: true },
+    });
+    if (user && !user.emailVerifiedAt) {
+      await this.sendVerificationEmail(user.id, user.email);
+    }
     return {
-      id: user.id,
-      email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      phone: user.phone,
-      role: user.role,
+      message:
+        'If the address belongs to an unverified account, a verification link has been sent.',
     };
   }
 
@@ -130,7 +313,10 @@ export class AuthService {
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: existing.id },
-        data: { password: await bcrypt.hash(dto.newPassword, 10) },
+        data: {
+          password: await bcrypt.hash(dto.newPassword, 10),
+          mustChangePassword: false,
+        },
       }),
       this.prisma.passwordResetToken.deleteMany({
         where: { userId: existing.id, usedAt: null },
@@ -145,11 +331,6 @@ export class AuthService {
 
   async forgotPassword(dto: ForgotPasswordDto) {
     this.email.assertConfigured();
-    const appUrl = process.env.APP_URL;
-    if (!appUrl) {
-      throw new ServiceUnavailableException('APP_URL is not configured');
-    }
-
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
@@ -172,7 +353,7 @@ export class AuthService {
         await this.email.send(
           user.email,
           'Reset your password',
-          `Use this link within one hour to reset your password: ${appUrl.replace(/\/$/, '')}/reset-password?token=${token}`,
+          `Use this link within one hour to reset your password: ${this.getFrontendUrl()}/reset-password?token=${token}`,
         );
       } catch (error) {
         await this.prisma.passwordResetToken.deleteMany({
@@ -219,7 +400,11 @@ export class AuthService {
 
       await tx.user.update({
         where: { id: token.userId },
-        data: { password },
+        data: {
+          password,
+          failedLoginAttempts: 0,
+          lockedUntil: null,
+        },
       });
       await tx.passwordResetToken.deleteMany({
         where: { userId: token.userId, id: { not: token.id } },
@@ -250,25 +435,77 @@ export class AuthService {
       throw new UnauthorizedException('This account is not active');
     }
 
+    const now = new Date();
+    if (existingUser.lockedUntil && existingUser.lockedUntil > now) {
+      throw new UnauthorizedException(
+        'Invalid email or password. Try again after the temporary lockout.',
+      );
+    }
+    if (!existingUser.emailVerifiedAt && !this.isEmailVerificationBypassed()) {
+      throw new UnauthorizedException(
+        'Verify your email address before signing in',
+      );
+    }
+    if (existingUser.lockedUntil && existingUser.lockedUntil <= now) {
+      await this.prisma.user.updateMany({
+        where: {
+          id: existingUser.id,
+          lockedUntil: { lte: now },
+        },
+        data: { failedLoginAttempts: 0, lockedUntil: null },
+      });
+    }
+
     const passwordMatch = await bcrypt.compare(
       loginDto.password,
       existingUser.password,
     );
 
     if (!passwordMatch) {
+      const failedAttempt = await this.prisma.user.update({
+        where: { id: existingUser.id },
+        data: { failedLoginAttempts: { increment: 1 } },
+        select: { failedLoginAttempts: true },
+      });
+      if (failedAttempt.failedLoginAttempts >= 5) {
+        await this.prisma.user.updateMany({
+          where: {
+            id: existingUser.id,
+            lockedUntil: null,
+            failedLoginAttempts: { gte: 5 },
+          },
+          data: { lockedUntil: new Date(Date.now() + 15 * 60 * 1000) },
+        });
+      }
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    const accessToken = await this.jwtService.signAsync(
-      this.buildAccessTokenPayload(existingUser),
+    const resetAttempts = await this.prisma.user.updateMany({
+      where: {
+        id: existingUser.id,
+        OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }],
+      },
+      data: { failedLoginAttempts: 0, lockedUntil: null },
+    });
+    if (resetAttempts.count !== 1) {
+      throw new UnauthorizedException(
+        'Invalid email or password. Try again after the temporary lockout.',
+      );
+    }
+
+    const { refreshToken, familyId } = await this.issueRefreshToken(
+      existingUser.id,
     );
-    const { refreshToken } = await this.issueRefreshToken(existingUser.id);
+    const accessToken = await this.jwtService.signAsync(
+      this.buildAccessTokenPayload(existingUser, familyId),
+    );
 
     return {
       access_token: accessToken,
       refresh_token: refreshToken,
       token_type: 'bearer',
-      expires_in: 24 * 60 * 60,
+      expires_in: 15 * 60,
+      must_change_password: existingUser.mustChangePassword,
     };
   }
 
@@ -276,58 +513,92 @@ export class AuthService {
     const tokenHash = this.hashToken(refreshToken);
     const now = new Date();
 
-    const activeSession = await this.prisma.refreshToken.findFirst({
-      where: {
-        tokenHash,
-        revokedAt: null,
-        expiresAt: { gt: now },
-      },
+    const storedToken = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash },
       include: {
         user: true,
       },
     });
 
-    if (!activeSession || !activeSession.user) {
+    if (!storedToken || !storedToken.user || storedToken.expiresAt <= now) {
       throw new UnauthorizedException('Refresh token is invalid or expired');
     }
 
-    if (activeSession.user.status !== 'ACTIVE') {
+    if (storedToken.user.status !== 'ACTIVE') {
       throw new UnauthorizedException('This account is not active');
     }
 
-    const newRefresh = await this.prisma.$transaction(async (tx) => {
+    if (storedToken.revokedAt) {
+      if (storedToken.replacedById) {
+        await this.revokeRefreshTokenFamily(storedToken.familyId, now);
+      }
+      throw new UnauthorizedException('Refresh token is invalid or expired');
+    }
+
+    const rotation = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.refreshToken.updateMany({
+        where: {
+          id: storedToken.id,
+          tokenHash,
+          revokedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: {
+          revokedAt: now,
+          lastUsedAt: now,
+        },
+      });
+
+      if (claimed.count !== 1) {
+        return null;
+      }
+
       const newRefreshToken = randomBytes(32).toString('hex');
       const newTokenHash = this.hashToken(newRefreshToken);
       const nextRefresh = await tx.refreshToken.create({
         data: {
-          userId: activeSession.userId,
+          userId: storedToken.userId,
+          familyId: storedToken.familyId,
           tokenHash: newTokenHash,
           expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         },
       });
 
       await tx.refreshToken.update({
-        where: { id: activeSession.id },
-        data: {
-          revokedAt: now,
-          replacedById: nextRefresh.id,
-          lastUsedAt: now,
-        },
+        where: { id: storedToken.id },
+        data: { replacedById: nextRefresh.id },
       });
 
-      return newRefreshToken;
+      return { refreshToken: newRefreshToken, sessionId: storedToken.familyId };
     });
 
+    if (!rotation) {
+      const latestToken = await this.prisma.refreshToken.findUnique({
+        where: { id: storedToken.id },
+      });
+      if (latestToken?.replacedById) {
+        await this.revokeRefreshTokenFamily(storedToken.familyId, now);
+      }
+      throw new UnauthorizedException('Refresh token is invalid or expired');
+    }
+
     const accessToken = await this.jwtService.signAsync(
-      this.buildAccessTokenPayload(activeSession.user),
+      this.buildAccessTokenPayload(storedToken.user, rotation.sessionId),
     );
 
     return {
       access_token: accessToken,
-      refresh_token: newRefresh,
+      refresh_token: rotation.refreshToken,
       token_type: 'bearer',
-      expires_in: 24 * 60 * 60,
+      expires_in: 15 * 60,
     };
+  }
+
+  private async revokeRefreshTokenFamily(familyId: string, revokedAt: Date) {
+    await this.prisma.refreshToken.updateMany({
+      where: { familyId, revokedAt: null },
+      data: { revokedAt },
+    });
   }
 
   async logout(user: RequestUser, refreshToken?: string) {
@@ -335,17 +606,13 @@ export class AuthService {
 
     if (refreshToken) {
       const tokenHash = this.hashToken(refreshToken);
-      await this.prisma.refreshToken.updateMany({
-        where: {
-          userId: user.id,
-          tokenHash,
-          revokedAt: null,
-        },
-        data: {
-          revokedAt: now,
-          lastUsedAt: now,
-        },
+      const session = await this.prisma.refreshToken.findFirst({
+        where: { userId: user.id, tokenHash },
+        select: { familyId: true },
       });
+      if (session) {
+        await this.revokeRefreshTokenFamily(session.familyId, now);
+      }
 
       return { message: 'Logged out successfully' };
     }

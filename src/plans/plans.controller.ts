@@ -13,6 +13,7 @@ import { PlansService } from './plans.service';
 
 import { CreatePlanDto } from './dto/create-plan-status.dto';
 import { UpdatePlanDto } from './dto/update-plan-status.dto';
+import { UpdatePlanStatusDto } from './dto/plan-status.dto';
 
 import {
   CurrentUser,
@@ -56,7 +57,7 @@ export class PlansController {
   @Patch(':id/status')
   updateStatus(
     @Param('id') id: string,
-    @Body() dto: UpdatePlanDto,
+    @Body() dto: UpdatePlanStatusDto,
     @CurrentUser() user: RequestUser,
   ) {
     return this.plansService.updateStatus(id, dto, user);

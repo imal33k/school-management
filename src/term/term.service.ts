@@ -39,6 +39,7 @@ export class TermService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -102,6 +103,20 @@ export class TermService {
     ) {
       throw new BadRequestException(
         'Term dates must fall within the academic session dates',
+      );
+    }
+
+    const overlappingTerm = await this.prisma.term.findFirst({
+      where: {
+        academicSessionId: session.id,
+        startDate: { lte: endDate },
+        endDate: { gte: startDate },
+      },
+      select: { id: true },
+    });
+    if (overlappingTerm) {
+      throw new ConflictException(
+        'Term dates cannot overlap another term in this academic session',
       );
     }
 
@@ -172,7 +187,6 @@ export class TermService {
           academicSession: true,
           examinations: true,
           feeStructures: true,
-          results: true,
         },
       });
 
@@ -237,6 +251,21 @@ export class TermService {
       );
     }
 
+    const overlappingTerm = await this.prisma.term.findFirst({
+      where: {
+        academicSessionId: term.academicSessionId,
+        id: { not: term.id },
+        startDate: { lte: endDate },
+        endDate: { gte: startDate },
+      },
+      select: { id: true },
+    });
+    if (overlappingTerm) {
+      throw new ConflictException(
+        'Term dates cannot overlap another term in this academic session',
+      );
+    }
+
     if (
       dto.type &&
       dto.type !== term.type
@@ -290,11 +319,27 @@ export class TermService {
             schoolId: membership.schoolId,
           },
         },
+        include: {
+          _count: {
+            select: {
+              examinations: true,
+              feeStructures: true,
+              invoices: true,
+              results: true,
+            },
+          },
+        },
       });
 
     if (!term) {
       throw new NotFoundException(
         'Term not found',
+      );
+    }
+
+    if (Object.values(term._count).some((count) => count > 0)) {
+      throw new ConflictException(
+        'Terms with examination, fee, invoice, or result history cannot be deleted',
       );
     }
 

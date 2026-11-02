@@ -9,6 +9,7 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 
@@ -18,6 +19,7 @@ import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentStatusDto } from './dto/update-payment.dto';
 import { InitializePaymentDto } from './dto/initialize-payment.dto';
 import { Public } from '../auth/decorator/public.decorator';
+import { Roles } from '../auth/decorator/roles.decorator';
 
 import {
   CurrentUser,
@@ -31,6 +33,13 @@ export class PaymentsController {
   ) {}
 
   @Post('initialize')
+  @Roles(
+    UserRole.STUDENT,
+    UserRole.PARENT,
+    UserRole.SCHOOL_ADMIN,
+    UserRole.ACCOUNTANT,
+    UserRole.SUPER_ADMIN,
+  )
   initialize(@Body() dto: InitializePaymentDto, @CurrentUser() user: RequestUser) {
     return this.paymentsService.initializePaystack(dto, user);
   }
@@ -42,11 +51,19 @@ export class PaymentsController {
   }
 
   @Get('verify/:reference')
+  @Roles(
+    UserRole.STUDENT,
+    UserRole.PARENT,
+    UserRole.SCHOOL_ADMIN,
+    UserRole.ACCOUNTANT,
+    UserRole.SUPER_ADMIN,
+  )
   verify(@Param('reference') reference: string, @CurrentUser() user: RequestUser) {
     return this.paymentsService.verifyPaystack(reference, user);
   }
 
   @Post()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.ACCOUNTANT, UserRole.SUPER_ADMIN)
   create(
     @Body() dto: CreatePaymentDto,
     @CurrentUser() user: RequestUser,
@@ -58,6 +75,7 @@ export class PaymentsController {
   }
 
   @Get()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.ACCOUNTANT, UserRole.SUPER_ADMIN)
   findAll(
 
     @CurrentUser() user: RequestUser,
@@ -69,6 +87,7 @@ export class PaymentsController {
   }
 
   @Get('student/:studentId')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.ACCOUNTANT, UserRole.SUPER_ADMIN)
   findByStudent(
     @Param('studentId') studentId: string,
     @CurrentUser() user: RequestUser,
@@ -80,6 +99,7 @@ export class PaymentsController {
   }
 
   @Get('invoice/:invoiceId')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.ACCOUNTANT, UserRole.SUPER_ADMIN)
   findByInvoice(
     @Param('invoiceId') invoiceId: string,
     @CurrentUser() user: RequestUser,
@@ -91,6 +111,7 @@ export class PaymentsController {
   }
 
   @Get(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.ACCOUNTANT, UserRole.SUPER_ADMIN)
   findOne(
     @Param('id') id: string,
     @CurrentUser() user: RequestUser,
@@ -102,6 +123,7 @@ export class PaymentsController {
   }
 
   @Patch(':id/status')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.ACCOUNTANT, UserRole.SUPER_ADMIN)
   updateStatus(
     @Param('id') id: string,
     @Body() dto: UpdatePaymentStatusDto,

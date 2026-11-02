@@ -11,16 +11,18 @@ import {
   RequestUser,
 } from '../auth/decorator/current-user.decorator';
 
-import { UserRole } from '@prisma/client';
+import { UserRole, UserStatus } from '@prisma/client';
 
 import { CreateTeacherDto } from './dto/create-teacher.dto';
 import { UpdateTeacherDto } from './dto/update-teacher.dto';
+import { AssignTeacherSubjectDto } from './dto/assign-teacher-subject.dto';
 
 import * as bcrypt from 'bcrypt';
 import { PlanLimitService } from '../plans/plan-limit.service';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { AuditLogService } from '../audit-log/audit-log.service';
 import { EmailService } from '../common/email.service';
+import { randomBytes } from 'crypto';
 
 @Injectable()
 export class TeacherService {
@@ -61,6 +63,7 @@ export class TeacherService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -98,34 +101,33 @@ export class TeacherService {
       );
     }
 
-    if (dto.email) {
-      const existingUser =
-        await this.prisma.user.findUnique({
-          where: {
-            email: dto.email,
-          },
-        });
+    const existingUser = await this.prisma.user.findUnique({
+      where: {
+        email: dto.email,
+      },
+    });
 
-      if (existingUser) {
-        throw new ConflictException(
-          'A user with this email already exists',
-        );
-      }
+    if (existingUser) {
+      throw new ConflictException(
+        'A user with this email already exists',
+      );
     }
 
-    const temporaryPassword = Math.random().toString(36).slice(-10);
+    this.email.assertConfigured();
+    const temporaryPassword = randomBytes(24).toString('hex');
     const hashedPassword = await bcrypt.hash(temporaryPassword, 10);
-    const teacherEmail = dto.email ?? `${dto.employeeId}@teacher.local`;
 
     const teacher = await this.prisma.$transaction(async (tx) => {
       const teacherUser = await tx.user.create({
         data: {
-          email: teacherEmail,
+          email: dto.email,
           firstName: dto.firstName,
           lastName: dto.lastName,
           phone: dto.phone,
           password: hashedPassword,
           role: UserRole.TEACHER,
+          mustChangePassword: true,
+          emailVerifiedAt: new Date(),
         },
       });
 
@@ -151,34 +153,37 @@ export class TeacherService {
         },
       });
 
-      if (dto.email) {
-        this.email.assertConfigured();
-        await this.email.send(
-          dto.email,
-          'Your teacher account is ready',
-          `Your temporary password is: ${temporaryPassword}. Use it to sign in and then change your password from the account settings page.`,
-        );
-      }
-
-      await this.auditLog.create({
-        schoolId: membership.schoolId,
-        userId: user.id,
-        action: 'teacher.created',
-        resource: 'Teacher',
-        resourceId: createdTeacher.id,
-        metadata: {
-          teacherId: createdTeacher.id,
-          employeeId: dto.employeeId,
-          createdBy: user.id,
-        },
-      });
-
       return createdTeacher;
+    });
+
+    try {
+      await this.email.send(
+        dto.email,
+        'Your teacher account is ready',
+        `Your temporary password is: ${temporaryPassword}. Sign in and change it before accessing school features.`,
+      );
+    } catch (error) {
+      await this.prisma.user.delete({
+        where: { id: teacher.userId },
+      });
+      throw error;
+    }
+
+    await this.auditLog.create({
+      schoolId: membership.schoolId,
+      userId: user.id,
+      action: 'teacher.created',
+      resource: 'Teacher',
+      resourceId: teacher.id,
+      metadata: {
+        teacherId: teacher.id,
+        employeeId: dto.employeeId,
+        createdBy: user.id,
+      },
     });
 
     return {
       teacher,
-      temporaryPassword,
     };
   }
 
@@ -194,11 +199,47 @@ export class TeacherService {
       throw new NotFoundException('Teacher not found');
     }
 
-    const temporaryPassword = Math.random().toString(36).slice(-10);
-    await this.prisma.user.update({
-      where: { id: teacher.userId },
-      data: { password: await bcrypt.hash(temporaryPassword, 10) },
-    });
+    this.email.assertConfigured();
+    const temporaryPassword = randomBytes(24).toString('hex');
+    const temporaryPasswordHash = await bcrypt.hash(temporaryPassword, 10);
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: teacher.userId },
+        data: {
+          password: temporaryPasswordHash,
+          mustChangePassword: true,
+        },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId: teacher.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+    ]);
+
+    try {
+      await this.email.send(
+        teacher.user.email,
+        'Your teacher password was reset',
+        `Your temporary password is: ${temporaryPassword}. Sign in and change it before accessing school features.`,
+      );
+    } catch (emailError) {
+      try {
+        await this.prisma.user.update({
+          where: { id: teacher.userId },
+          data: {
+            password: teacher.user.password,
+            mustChangePassword: teacher.user.mustChangePassword,
+          },
+        });
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [emailError, rollbackError],
+          'Teacher password email failed and the previous password could not be restored',
+        );
+      }
+      throw emailError;
+    }
 
     await this.auditLog.create({
       schoolId: membership.schoolId,
@@ -212,7 +253,66 @@ export class TeacherService {
       },
     });
 
-    return { message: 'Teacher password reset successfully', temporaryPassword };
+    return { message: 'Teacher password reset email sent successfully' };
+  }
+
+  async assignSubject(
+    user: RequestUser,
+    teacherId: string,
+    dto: AssignTeacherSubjectDto,
+  ) {
+    this.ensureAdmin(user);
+    const membership = await this.getMembership(user);
+
+    const teacher = await this.prisma.teacher.findFirst({
+      where: {
+        id: teacherId,
+        schoolId: membership.schoolId,
+      },
+      select: { id: true },
+    });
+
+    if (!teacher) {
+      throw new NotFoundException('Teacher not found in this school');
+    }
+
+    const subject = await this.prisma.subject.findFirst({
+      where: {
+        id: dto.subjectId,
+        schoolId: membership.schoolId,
+      },
+      select: { id: true },
+    });
+
+    if (!subject) {
+      throw new NotFoundException('Subject not found in this school');
+    }
+
+    const existing = await this.prisma.teacherSubject.findUnique({
+      where: {
+        teacherId_subjectId: {
+          teacherId: teacher.id,
+          subjectId: subject.id,
+        },
+      },
+    });
+
+    if (existing) {
+      throw new ConflictException(
+        'Teacher is already assigned to this subject',
+      );
+    }
+
+    return this.prisma.teacherSubject.create({
+      data: {
+        teacherId: teacher.id,
+        subjectId: subject.id,
+      },
+      include: {
+        teacher: true,
+        subject: true,
+      },
+    });
   }
 
   async findAll(user: RequestUser, query: PaginationQueryDto = new PaginationQueryDto()) {
@@ -435,15 +535,17 @@ export class TeacherService {
         });
       }
 
-      await this.auditLog.create({
-        schoolId: membership.schoolId,
-        userId: user.id,
-        action: 'teacher.updated',
-        resource: 'Teacher',
-        resourceId: teacher.id,
-        metadata: {
-          teacherId: teacher.id,
-          updatedFields: Object.keys(filteredTeacherUpdateData),
+      await tx.auditLog.create({
+        data: {
+          schoolId: membership.schoolId,
+          userId: user.id,
+          action: 'teacher.updated',
+          resource: 'Teacher',
+          resourceId: teacher.id,
+          metadata: {
+            teacherId: teacher.id,
+            updatedFields: Object.keys(filteredTeacherUpdateData),
+          },
         },
       });
 
@@ -477,17 +579,43 @@ export class TeacherService {
         where: { id },
       });
 
-      await this.auditLog.create({
-        schoolId: membership.schoolId,
-        userId: user.id,
-        action: 'teacher.deleted',
-        resource: 'Teacher',
-        resourceId: teacher.id,
-        metadata: {
-          teacherId: teacher.id,
+      await tx.schoolMembership.deleteMany({
+        where: {
           userId: teacher.userId,
+          schoolId: membership.schoolId,
         },
       });
+
+      await tx.refreshToken.updateMany({
+        where: {
+          userId: teacher.userId,
+          revokedAt: null,
+        },
+        data: { revokedAt: new Date() },
+      });
+
+      const remainingMemberships = await tx.schoolMembership.count({
+        where: { userId: teacher.userId },
+      });
+
+      if (remainingMemberships === 0) {
+        await tx.user.update({
+          where: { id: teacher.userId },
+          data: { status: UserStatus.INACTIVE },
+        });
+      }
+    });
+
+    await this.auditLog.create({
+      schoolId: membership.schoolId,
+      userId: user.id,
+      action: 'teacher.deleted',
+      resource: 'Teacher',
+      resourceId: teacher.id,
+      metadata: {
+        teacherId: teacher.id,
+        userId: teacher.userId,
+      },
     });
 
     return {

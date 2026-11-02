@@ -15,7 +15,7 @@ export class EmailService {
       !process.env.MAIL_FROM
     ) {
       throw new ServiceUnavailableException(
-        'SMTP email delivery is not configured',
+        'Email verification is unavailable because SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, and MAIL_FROM in the backend environment, then restart the API.',
       );
     }
   }

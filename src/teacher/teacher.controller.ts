@@ -16,6 +16,7 @@ import { TeacherService } from './teacher.service';
 
 import { CreateTeacherDto } from './dto/create-teacher.dto';
 import { UpdateTeacherDto } from './dto/update-teacher.dto';
+import { AssignTeacherSubjectDto } from './dto/assign-teacher-subject.dto';
 
 import {
   CurrentUser,
@@ -76,6 +77,18 @@ export class TeacherController {
   @UseGuards(SchoolAccessGuard)
   @Post(':id/reset-password')
   resetPassword(@CurrentUser() user: RequestUser, @Param('id') id: string) { return this.teacherService.resetPassword(user, id); }
+
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
+  @RequireSchoolAccess()
+  @UseGuards(SchoolAccessGuard)
+  @Post(':id/subjects')
+  assignSubject(
+    @CurrentUser() user: RequestUser,
+    @Param('id') id: string,
+    @Body() dto: AssignTeacherSubjectDto,
+  ) {
+    return this.teacherService.assignSubject(user, id, dto);
+  }
 
   @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN, UserRole.TEACHER)
   @RequireSchoolAccess()

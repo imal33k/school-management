@@ -35,6 +35,18 @@ export class ClassesService {
     }
   }
 
+  private ensureSchoolStaff(user: RequestUser) {
+    if (
+      user.role !== UserRole.SCHOOL_ADMIN &&
+      user.role !== UserRole.SUPER_ADMIN &&
+      user.role !== UserRole.TEACHER
+    ) {
+      throw new ForbiddenException(
+        'Only school staff can access class records',
+      );
+    }
+  }
+
   async create(
     user: RequestUser,
     dto: CreateClassDto,
@@ -45,6 +57,7 @@ export class ClassesService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -95,10 +108,13 @@ export class ClassesService {
   }
 
   async findAll(user: RequestUser) {
+    this.ensureSchoolStaff(user);
+
     const membership =
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -125,10 +141,13 @@ export class ClassesService {
     id: string,
     user: RequestUser,
   ) {
+    this.ensureSchoolStaff(user);
+
     const membership =
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -148,6 +167,7 @@ export class ClassesService {
           academicSession: true,
 
           enrollments: {
+            where: { status: 'ACTIVE' },
             include: {
               student: true,
             },
@@ -173,6 +193,20 @@ export class ClassesService {
       );
     }
 
+    if (user.role === UserRole.TEACHER) {
+      const assignedClass = await this.prisma.classTeacher.findFirst({
+        where: {
+          classId: schoolClass.id,
+          teacher: { userId: user.id },
+        },
+        select: { id: true },
+      });
+
+      if (!assignedClass) {
+        throw new ForbiddenException('You are not assigned to this class');
+      }
+    }
+
     return schoolClass;
   }
 
@@ -187,6 +221,7 @@ export class ClassesService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -232,6 +267,7 @@ export class ClassesService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -247,11 +283,27 @@ export class ClassesService {
           id,
           schoolId: membership.schoolId,
         },
+        include: {
+          _count: {
+            select: {
+              attendance: true,
+              examinations: true,
+              enrollments: true,
+              timetableEntries: true,
+            },
+          },
+        },
       });
 
     if (!existingClass) {
       throw new NotFoundException(
         'Class not found',
+      );
+    }
+
+    if (Object.values(existingClass._count).some((count) => count > 0)) {
+      throw new ConflictException(
+        'Classes with attendance, examination, enrollment, or timetable history cannot be deleted',
       );
     }
 
@@ -273,6 +325,7 @@ export class ClassesService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -338,6 +391,94 @@ export class ClassesService {
     });
   }
 
+  async setPrimaryTeacher(
+    user: RequestUser,
+    classId: string,
+    teacherId: string,
+  ) {
+    this.ensureAdmin(user);
+    const membership = await this.prisma.schoolMembership.findFirst({
+      where: { userId: user.id },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('You are not a member of any school');
+    }
+
+    const assignment = await this.prisma.classTeacher.findFirst({
+      where: {
+        classId,
+        teacherId,
+        class: { schoolId: membership.schoolId },
+      },
+    });
+
+    if (!assignment) {
+      throw new NotFoundException('Teacher is not assigned to this class');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.classTeacher.updateMany({
+        where: { classId },
+        data: { isPrimary: false },
+      });
+
+      return tx.classTeacher.update({
+        where: {
+          classId_teacherId: { classId, teacherId },
+        },
+        data: { isPrimary: true },
+        include: { teacher: true, class: true },
+      });
+    });
+  }
+
+  async unassignTeacher(
+    user: RequestUser,
+    classId: string,
+    teacherId: string,
+  ) {
+    this.ensureAdmin(user);
+    const membership = await this.prisma.schoolMembership.findFirst({
+      where: { userId: user.id },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('You are not a member of any school');
+    }
+
+    const assignment = await this.prisma.classTeacher.findFirst({
+      where: {
+        classId,
+        teacherId,
+        class: { schoolId: membership.schoolId },
+      },
+    });
+
+    if (!assignment) {
+      throw new NotFoundException('Teacher is not assigned to this class');
+    }
+
+    const scheduledEntry = await this.prisma.timetableEntry.findFirst({
+      where: { classId, teacherId },
+      select: { id: true },
+    });
+
+    if (scheduledEntry) {
+      throw new ConflictException(
+        'Remove this teacher from the class timetable before unassigning them',
+      );
+    }
+
+    await this.prisma.classTeacher.delete({
+      where: {
+        classId_teacherId: { classId, teacherId },
+      },
+    });
+
+    return { message: 'Teacher unassigned from class successfully' };
+  }
+
   async assignSubject(
     user: RequestUser,
     classId: string,
@@ -349,6 +490,7 @@ export class ClassesService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
@@ -414,6 +556,52 @@ export class ClassesService {
     });
   }
 
+  async unassignSubject(
+    user: RequestUser,
+    classId: string,
+    subjectId: string,
+  ) {
+    this.ensureAdmin(user);
+    const membership = await this.prisma.schoolMembership.findFirst({
+      where: { userId: user.id },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('You are not a member of any school');
+    }
+
+    const assignment = await this.prisma.classSubject.findFirst({
+      where: {
+        classId,
+        subjectId,
+        class: { schoolId: membership.schoolId },
+      },
+    });
+
+    if (!assignment) {
+      throw new NotFoundException('Subject is not assigned to this class');
+    }
+
+    const scheduledEntry = await this.prisma.timetableEntry.findFirst({
+      where: { classId, subjectId },
+      select: { id: true },
+    });
+
+    if (scheduledEntry) {
+      throw new ConflictException(
+        'Remove this subject from the class timetable before unassigning it',
+      );
+    }
+
+    await this.prisma.classSubject.delete({
+      where: {
+        classId_subjectId: { classId, subjectId },
+      },
+    });
+
+    return { message: 'Subject unassigned from class successfully' };
+  }
+
   async enrollStudent(
     user: RequestUser,
     classId: string,
@@ -425,26 +613,13 @@ export class ClassesService {
       await this.prisma.schoolMembership.findFirst({
         where: {
           userId: user.id,
+          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
         },
       });
 
     if (!membership) {
       throw new NotFoundException(
         'You are not a member of any school',
-      );
-    }
-
-    const schoolClass =
-      await this.prisma.schoolClass.findFirst({
-        where: {
-          id: classId,
-          schoolId: membership.schoolId,
-        },
-      });
-
-    if (!schoolClass) {
-      throw new NotFoundException(
-        'Class not found',
       );
     }
 
@@ -462,35 +637,63 @@ export class ClassesService {
       );
     }
 
-    const existingEnrollment =
-      await this.prisma.enrollment.findUnique({
-        where: {
-          studentId_academicSessionId: {
-            studentId: dto.studentId,
-            academicSessionId:
-              schoolClass.academicSessionId,
+    return this.prisma.$transaction(
+      async (tx) => {
+        const schoolClass = await tx.schoolClass.findFirst({
+          where: { id: classId, schoolId: membership.schoolId },
+          include: { academicSession: true },
+        });
+        if (!schoolClass) {
+          throw new NotFoundException('Class not found');
+        }
+        if (!schoolClass.academicSession.isActive) {
+          throw new ConflictException(
+            'Students can only be enrolled in a class from the active academic session',
+          );
+        }
+
+        const existingEnrollment = await tx.enrollment.findUnique({
+          where: {
+            studentId_academicSessionId: {
+              studentId: student.id,
+              academicSessionId: schoolClass.academicSessionId,
+            },
           },
-        },
-      });
+        });
+        if (existingEnrollment) {
+          throw new ConflictException(
+            'Student is already enrolled in a class for this academic session',
+          );
+        }
 
-    if (existingEnrollment) {
-      throw new ConflictException(
-        'Student is already enrolled in a class for this academic session',
-      );
-    }
+        if (schoolClass.capacity !== null) {
+          const enrollmentCount = await tx.enrollment.count({
+            where: {
+              classId: schoolClass.id,
+              status: 'ACTIVE',
+            },
+          });
+          if (enrollmentCount >= schoolClass.capacity) {
+            throw new ConflictException(
+              'This class has reached its capacity',
+            );
+          }
+        }
 
-    return this.prisma.enrollment.create({
-      data: {
-        studentId: dto.studentId,
-        classId,
-        academicSessionId:
-          schoolClass.academicSessionId,
+        return tx.enrollment.create({
+          data: {
+            studentId: student.id,
+            classId: schoolClass.id,
+            academicSessionId: schoolClass.academicSessionId,
+          },
+          include: {
+            student: true,
+            class: true,
+            academicSession: true,
+          },
+        });
       },
-      include: {
-        student: true,
-        class: true,
-        academicSession: true,
-      },
-    });
+      { isolationLevel: 'Serializable' },
+    );
   }
 }

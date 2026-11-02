@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 
 import { AnnouncementService } from './announcement.service';
 
@@ -14,6 +15,7 @@ import {
   CurrentUser,
   type RequestUser,
 } from '../auth/decorator/current-user.decorator';
+import { Roles } from '../auth/decorator/roles.decorator';
 
 import { CreateAnnouncementDto } from './dto/create-announcement.dto';
 import { UpdateAnnouncementDto } from './dto/update-announcement.dto';
@@ -25,6 +27,7 @@ export class AnnouncementController {
   ) {}
 
   @Post()
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   create(
     @CurrentUser() user: RequestUser,
     @Body() dto: CreateAnnouncementDto,
@@ -33,11 +36,27 @@ export class AnnouncementController {
   }
 
   @Get()
+  @Roles(
+    UserRole.SCHOOL_ADMIN,
+    UserRole.SUPER_ADMIN,
+    UserRole.TEACHER,
+    UserRole.ACCOUNTANT,
+    UserRole.PARENT,
+    UserRole.STUDENT,
+  )
   findAll(@CurrentUser() user: RequestUser) {
     return this.announcementService.findAll(user);
   }
 
   @Get(':id')
+  @Roles(
+    UserRole.SCHOOL_ADMIN,
+    UserRole.SUPER_ADMIN,
+    UserRole.TEACHER,
+    UserRole.ACCOUNTANT,
+    UserRole.PARENT,
+    UserRole.STUDENT,
+  )
   findOne(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -46,6 +65,7 @@ export class AnnouncementController {
   }
 
   @Patch(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   update(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
@@ -59,6 +79,7 @@ export class AnnouncementController {
   }
 
   @Delete(':id')
+  @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
   remove(
     @CurrentUser() user: RequestUser,
     @Param('id') id: string,
