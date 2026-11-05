@@ -9,7 +9,7 @@
     "node": ">=22.22.3 <23 || >=24.15.0"
   },
   "scripts": {
-    "build": "nest build",
+    "build": "prisma generate && nest build",
     "deploy": "nest deploy",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
