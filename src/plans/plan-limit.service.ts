@@ -10,6 +10,7 @@ import {
   SubscriptionStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { isSubscriptionEnforcementBypassed } from '../subscriptions/subscription-enforcement';
 
 @Injectable()
 export class PlanLimitService {
@@ -19,7 +20,10 @@ export class PlanLimitService {
     schoolId: string,
     kind: 'students' | 'teachers' | 'parents',
   ) {
+    if (isSubscriptionEnforcementBypassed()) return;
+
     const subscription = await this.ensureSubscriptionActive(schoolId);
+    if (!subscription) return;
 
     const limit =
       kind === 'students'
@@ -95,6 +99,8 @@ export class PlanLimitService {
   }
 
   async ensureSubscriptionActive(schoolId: string) {
+    if (isSubscriptionEnforcementBypassed()) return null;
+
     const subscription = await this.prisma.subscription.findUnique({
       where: { schoolId },
       include: { plan: true, school: { select: { status: true } } },

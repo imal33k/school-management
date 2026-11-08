@@ -34,7 +34,7 @@ import { SuperAdminModule } from './super-admin/super-admin.module';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
-
+import { GradingModule } from './grading/grading.module';
 
 @Module({
   imports: [
@@ -83,6 +83,8 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
     SubscriptionsModule,
     SchoolsModule,
     SuperAdminModule,
+    GradingModule
+    
   ],
   controllers: [AppController],
   providers: [

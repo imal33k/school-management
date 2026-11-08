@@ -10,7 +10,8 @@ import {
   Prisma,
   UserRole,
 } from '@prisma/client';
-
+import { GradingService } from '../grading/grading.service';
+import { gradeFor, percentageOf } from '../grading/grading.logic';
 import { PrismaService } from '../prisma/prisma.service';
 import { RequestUser } from '../auth/decorator/current-user.decorator';
 
@@ -19,7 +20,7 @@ import { UpdateResultDto } from './dto/update-result.dto';
 
 @Injectable()
 export class ResultsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly gradingService: GradingService) {}
 
   private async getMembership(user: RequestUser) {
     const membership = await this.prisma.schoolMembership.findFirst({
@@ -267,7 +268,8 @@ export class ResultsService {
     // Calculate grade
     // --------------------------------------------------
 
-    const grade = this.calculateGrade(
+    const grade = await this.computeGrade(
+      schoolId,
       totalScore,
       examinationSubject.maxScore,
     );
@@ -616,7 +618,8 @@ export class ResultsService {
       );
     }
 
-    const grade = this.calculateGrade(
+    const grade = await this.computeGrade(
+      membership.schoolId,
       totalScore,
       examinationSubject.maxScore,
     );
@@ -643,6 +646,7 @@ export class ResultsService {
       },
     });
   }
+ 
 
   // --------------------------------------------------
   // DELETE RESULT
@@ -710,34 +714,15 @@ export class ResultsService {
   // --------------------------------------------------
   // GRADE CALCULATION
   // --------------------------------------------------
-
-  private calculateGrade(
+  // Uses the school's own grading scale, or the built-in A-F scale
+  // if the school has not set one up.
+  private async computeGrade(
+    schoolId: string,
     totalScore: number,
     maxScore: number,
-  ): string {
-    const percentage =
-      (totalScore / maxScore) * 100;
+  ): Promise<string> {
+    const { bands } = await this.gradingService.getEffectiveBands(schoolId);
 
-    if (percentage >= 70) {
-      return 'A';
-    }
-
-    if (percentage >= 60) {
-      return 'B';
-    }
-
-    if (percentage >= 50) {
-      return 'C';
-    }
-
-    if (percentage >= 45) {
-      return 'D';
-    }
-
-    if (percentage >= 40) {
-      return 'E';
-    }
-
-    return 'F';
+    return gradeFor(bands, percentageOf(totalScore, maxScore)).grade;
   }
 }

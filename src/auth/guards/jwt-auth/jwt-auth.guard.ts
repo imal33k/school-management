@@ -16,6 +16,7 @@ import {
 
 import { IS_PUBLIC_KEY } from '../../decorator/public.decorator';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { isSubscriptionEnforcementBypassed } from '../../../subscriptions/subscription-enforcement';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -132,39 +133,41 @@ export class JwtAuthGuard implements CanActivate {
         );
       }
 
-      const subscription = membership.school.subscription;
-      const now = new Date();
-      const isTrialOrActive =
-        subscription?.status === SubscriptionStatus.ACTIVE ||
-        subscription?.status === SubscriptionStatus.TRIAL;
-      if (subscription && isTrialOrActive && subscription.endDate <= now) {
-        await this.prisma.subscription.updateMany({
-          where: {
-            id: subscription.id,
-            status: {
-              in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIAL],
+      if (!isSubscriptionEnforcementBypassed()) {
+        const subscription = membership.school.subscription;
+        const now = new Date();
+        const isTrialOrActive =
+          subscription?.status === SubscriptionStatus.ACTIVE ||
+          subscription?.status === SubscriptionStatus.TRIAL;
+        if (subscription && isTrialOrActive && subscription.endDate <= now) {
+          await this.prisma.subscription.updateMany({
+            where: {
+              id: subscription.id,
+              status: {
+                in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIAL],
+              },
+              endDate: { lte: now },
             },
-            endDate: { lte: now },
-          },
-          data: { status: SubscriptionStatus.EXPIRED },
-        });
-        subscription.status = SubscriptionStatus.EXPIRED;
-      }
+            data: { status: SubscriptionStatus.EXPIRED },
+          });
+          subscription.status = SubscriptionStatus.EXPIRED;
+        }
 
-      const subscriptionInGoodStanding =
-        subscription !== null &&
-        (subscription.status === SubscriptionStatus.ACTIVE ||
-          subscription.status === SubscriptionStatus.TRIAL) &&
-        subscription.startDate <= now &&
-        subscription.endDate > now;
+        const subscriptionInGoodStanding =
+          subscription !== null &&
+          (subscription.status === SubscriptionStatus.ACTIVE ||
+            subscription.status === SubscriptionStatus.TRIAL) &&
+          subscription.startDate <= now &&
+          subscription.endDate > now;
 
-      if (
-        !subscriptionInGoodStanding &&
-        !this.isBillingRoute(request.path, request.method)
-      ) {
-        throw new ForbiddenException(
-          'An active subscription is required to use school features',
-        );
+        if (
+          !subscriptionInGoodStanding &&
+          !this.isBillingRoute(request.path, request.method)
+        ) {
+          throw new ForbiddenException(
+            'An active subscription is required to use school features',
+          );
+        }
       }
     }
 

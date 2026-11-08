@@ -36,6 +36,37 @@ model School {
   subscriptionPayments             SubscriptionPayment[]
   teachers                         Teacher[]
   invitations                      SchoolInvitation[]
+  gradeScales                      GradeScale[]
+}
+
+model GradeScale {
+  id        String   @id @default(uuid())
+  schoolId  String
+  name      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  school School      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  bands  GradeBand[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+}
+
+model GradeBand {
+  id           String  @id @default(uuid())
+  gradeScaleId String
+  grade        String
+  minScore     Float
+  remark       String?
+  points       Float?
+
+  gradeScale GradeScale @relation(fields: [gradeScaleId], references: [id], onDelete: Cascade)
+
+  @@unique([gradeScaleId, grade])
+  @@unique([gradeScaleId, minScore])
+  @@index([gradeScaleId])
 }
 
 model User {

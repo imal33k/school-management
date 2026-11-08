@@ -58,6 +58,10 @@ export class TeacherService {
     return teacherUserId;
   }
 
+  private areTeacherEmailsPaused() {
+    return process.env.PAUSE_TEACHER_EMAILS === 'true';
+  }
+
   private async getMembership(user: RequestUser) {
     const membership =
       await this.prisma.schoolMembership.findFirst({
@@ -113,7 +117,8 @@ export class TeacherService {
       );
     }
 
-    this.email.assertConfigured();
+    const emailsPaused = this.areTeacherEmailsPaused();
+    if (!emailsPaused) this.email.assertConfigured();
     const temporaryPassword = randomBytes(24).toString('hex');
     const hashedPassword = await bcrypt.hash(temporaryPassword, 10);
 
@@ -156,17 +161,19 @@ export class TeacherService {
       return createdTeacher;
     });
 
-    try {
-      await this.email.send(
-        dto.email,
-        'Your teacher account is ready',
-        `Your temporary password is: ${temporaryPassword}. Sign in and change it before accessing school features.`,
-      );
-    } catch (error) {
-      await this.prisma.user.delete({
-        where: { id: teacher.userId },
-      });
-      throw error;
+    if (!emailsPaused) {
+      try {
+        await this.email.send(
+          dto.email,
+          'Your teacher account is ready',
+          `Your temporary password is: ${temporaryPassword}. Sign in and change it before accessing school features.`,
+        );
+      } catch (error) {
+        await this.prisma.user.delete({
+          where: { id: teacher.userId },
+        });
+        throw error;
+      }
     }
 
     await this.auditLog.create({
@@ -184,6 +191,7 @@ export class TeacherService {
 
     return {
       teacher,
+      ...(emailsPaused ? { temporaryPassword, emailSent: false } : {}),
     };
   }
 
@@ -199,7 +207,8 @@ export class TeacherService {
       throw new NotFoundException('Teacher not found');
     }
 
-    this.email.assertConfigured();
+    const emailsPaused = this.areTeacherEmailsPaused();
+    if (!emailsPaused) this.email.assertConfigured();
     const temporaryPassword = randomBytes(24).toString('hex');
     const temporaryPasswordHash = await bcrypt.hash(temporaryPassword, 10);
 
@@ -217,28 +226,30 @@ export class TeacherService {
       }),
     ]);
 
-    try {
-      await this.email.send(
-        teacher.user.email,
-        'Your teacher password was reset',
-        `Your temporary password is: ${temporaryPassword}. Sign in and change it before accessing school features.`,
-      );
-    } catch (emailError) {
+    if (!emailsPaused) {
       try {
-        await this.prisma.user.update({
-          where: { id: teacher.userId },
-          data: {
-            password: teacher.user.password,
-            mustChangePassword: teacher.user.mustChangePassword,
-          },
-        });
-      } catch (rollbackError) {
-        throw new AggregateError(
-          [emailError, rollbackError],
-          'Teacher password email failed and the previous password could not be restored',
+        await this.email.send(
+          teacher.user.email,
+          'Your teacher password was reset',
+          `Your temporary password is: ${temporaryPassword}. Sign in and change it before accessing school features.`,
         );
+      } catch (emailError) {
+        try {
+          await this.prisma.user.update({
+            where: { id: teacher.userId },
+            data: {
+              password: teacher.user.password,
+              mustChangePassword: teacher.user.mustChangePassword,
+            },
+          });
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [emailError, rollbackError],
+            'Teacher password email failed and the previous password could not be restored',
+          );
+        }
+        throw emailError;
       }
-      throw emailError;
     }
 
     await this.auditLog.create({
@@ -253,7 +264,13 @@ export class TeacherService {
       },
     });
 
-    return { message: 'Teacher password reset email sent successfully' };
+    return emailsPaused
+      ? {
+          message: 'Teacher password reset; email delivery is paused',
+          temporaryPassword,
+          emailSent: false,
+        }
+      : { message: 'Teacher password reset email sent successfully' };
   }
 
   async assignSubject(

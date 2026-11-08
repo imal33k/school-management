@@ -1100,6 +1100,7 @@ function ResourcePage({ resourceKey, user }: { resourceKey: string; user: User }
   const [meta, setMeta] = useState({ total: 0, totalPages: 1 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
+  const [teacherTemporaryPassword, setTeacherTemporaryPassword] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [payingInvoiceId, setPayingInvoiceId] = useState('');
@@ -1240,6 +1241,25 @@ function ResourcePage({ resourceKey, user }: { resourceKey: string; user: User }
         action={canCreate ? <button className="button button-primary" onClick={() => setShowCreate(true)}><Plus size={16} /> Add {title.slice(0, -1).toLowerCase()}</button> : undefined}
       />
       {Boolean(error) && <ErrorMessage error={error} />}
+      {teacherTemporaryPassword && (
+        <div className="alert alert-success" role="status">
+          <div>
+            <strong>Teacher added, but email delivery is paused.</strong>
+            <p>
+              Share this temporary password securely. The teacher must change
+              it after signing in.
+            </p>
+            <code>{teacherTemporaryPassword}</code>
+          </div>
+          <button
+            className="icon-button"
+            aria-label="Dismiss temporary password"
+            onClick={() => setTeacherTemporaryPassword('')}
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
       <section className="panel directory-panel">
         <div className="directory-toolbar">
           <div className="directory-count"><strong>{meta.total}</strong> {title.toLowerCase()}<span>·</span> Keep your records up to date</div>
@@ -1284,7 +1304,19 @@ function ResourcePage({ resourceKey, user }: { resourceKey: string; user: User }
         </div>
         <div className="table-footer"><span>Showing {data.length ? (page - 1) * 20 + 1 : 0}–{(page - 1) * 20 + data.length} of {meta.total}</span><div className="pagination"><button className="icon-button" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} aria-label="Previous page"><ChevronLeft size={16} /></button><span>Page {page} of {meta.totalPages}</span><button className="icon-button" disabled={page >= meta.totalPages} onClick={() => setPage((value) => value + 1)} aria-label="Next page"><ChevronRight size={16} /></button></div></div>
       </section>
-      {showCreate && config.fields && <CreateRecordModal title={title} endpoint={config.endpoint} fields={config.fields} onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); setRefresh((value) => value + 1); }} />}
+      {showCreate && config.fields && <CreateRecordModal title={title} endpoint={config.endpoint} fields={config.fields} onClose={() => setShowCreate(false)} onCreated={(result) => {
+        if (
+          resourceKey === 'teachers' &&
+          typeof result === 'object' &&
+          result !== null &&
+          'temporaryPassword' in result &&
+          typeof result.temporaryPassword === 'string'
+        ) {
+          setTeacherTemporaryPassword(result.temporaryPassword);
+        }
+        setShowCreate(false);
+        setRefresh((value) => value + 1);
+      }} />}
     </div>
   );
 }
@@ -1304,7 +1336,7 @@ function CreateRecordModal({
   endpoint: string;
   fields: Field[];
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (result: unknown) => void;
 }) {
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
@@ -1321,8 +1353,8 @@ function CreateRecordModal({
       }
     });
     try {
-      await api(endpoint, { method: 'POST', body: JSON.stringify(body) });
-      onCreated();
+      const result = await api<unknown>(endpoint, { method: 'POST', body: JSON.stringify(body) });
+      onCreated(result);
     } catch (submitError) {
       setError(submitError);
     } finally {

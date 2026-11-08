@@ -200,6 +200,23 @@ describe('JwtAuthGuard tenant access', () => {
     );
   });
 
+  it('bypasses subscription enforcement when temporary testing is enabled', async () => {
+    const previousValue = process.env.BYPASS_SUBSCRIPTION_CHECK;
+    process.env.BYPASS_SUBSCRIPTION_CHECK = 'true';
+    setUser(SchoolStatus.ACTIVE, UserRole.SCHOOL_ADMIN, null);
+
+    try {
+      await expect(guard.canActivate(context)).resolves.toBe(true);
+      expect(prisma.subscription.updateMany).not.toHaveBeenCalled();
+    } finally {
+      if (previousValue === undefined) {
+        delete process.env.BYPASS_SUBSCRIPTION_CHECK;
+      } else {
+        process.env.BYPASS_SUBSCRIPTION_CHECK = previousValue;
+      }
+    }
+  });
+
   it('blocks subscriptions that have not started yet', async () => {
     setUser(
       SchoolStatus.ACTIVE,
