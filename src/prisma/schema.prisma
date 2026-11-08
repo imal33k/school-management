@@ -37,6 +37,7 @@ model School {
   teachers                         Teacher[]
   invitations                      SchoolInvitation[]
   gradeScales                      GradeScale[]
+  assessmentComponents             AssessmentComponent[]
 }
 
 model GradeScale {
@@ -458,7 +459,7 @@ model Result {
   subject       Subject     @relation(fields: [subjectId], references: [id], onDelete: Cascade)
   teacher       Teacher?    @relation(fields: [teacherId], references: [id])
   term          Term        @relation(fields: [termId], references: [id], onDelete: Cascade)
-
+  componentScores   ResultComponentScore[]
   @@unique([studentId, examinationId, subjectId])
   @@index([studentId])
   @@index([examinationId])
@@ -653,6 +654,37 @@ model AuditLog {
   @@index([schoolId])
   @@index([userId])
   @@index([createdAt])
+}
+
+model AssessmentComponent {
+  id        String   @id @default(uuid())
+  schoolId  String
+  name      String
+  maxScore  Float
+  sortOrder Int      @default(0)
+  isExam    Boolean  @default(false)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  school School                 @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  scores ResultComponentScore[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+}
+
+model ResultComponentScore {
+  id          String @id @default(uuid())
+  resultId    String
+  componentId String
+  score       Float
+
+  result    Result              @relation(fields: [resultId], references: [id], onDelete: Cascade)
+  component AssessmentComponent @relation(fields: [componentId], references: [id], onDelete: Restrict)
+
+  @@unique([resultId, componentId])
+  @@index([componentId])
 }
 
 enum UserRole {
