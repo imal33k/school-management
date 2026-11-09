@@ -38,6 +38,7 @@ model School {
   invitations                      SchoolInvitation[]
   gradeScales                      GradeScale[]
   assessmentComponents             AssessmentComponent[]
+  reportCards                      ReportCard[] 
 }
 
 model GradeScale {
@@ -200,7 +201,7 @@ model Student {
   school          School            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   user            User?             @relation(fields: [userId], references: [id])
   guardians       StudentGuardian[]
-
+    reportCards   ReportCard[]
   @@unique([schoolId, admissionNumber])
   @@index([schoolId])
   @@index([lastName])
@@ -424,7 +425,7 @@ model Examination {
   term      Term                 @relation(fields: [termId], references: [id], onDelete: Cascade)
   subjects  ExaminationSubject[]
   results   Result[]
-
+    reportCards   ReportCard[]
   @@index([schoolId])
   @@index([classId])
 }
@@ -687,6 +688,33 @@ model ResultComponentScore {
   @@index([componentId])
 }
 
+
+model ReportCard {
+  id              String           @id @default(uuid())
+  schoolId        String
+  studentId       String
+  examinationId   String
+  totalScore      Float            @default(0)
+  average         Float            @default(0)
+  position        Int?
+  classSize       Int              @default(0)
+  subjectCount    Int              @default(0)
+  teacherRemark   String?
+  principalRemark String?
+  status          ReportCardStatus @default(DRAFT)
+  generatedAt     DateTime         @default(now())
+  publishedAt     DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  school      School      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  student     Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  examination Examination @relation(fields: [examinationId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, examinationId])
+  @@index([schoolId])
+  @@index([examinationId])
+}
 enum UserRole {
   SUPER_ADMIN
   SCHOOL_ADMIN
@@ -714,6 +742,11 @@ enum StudentStatus {
   GRADUATED
   SUSPENDED
   TRANSFERRED
+}
+
+enum ReportCardStatus {
+  DRAFT
+  PUBLISHED
 }
 
 enum Gender {
