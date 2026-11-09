@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-
+import { AssessmentComponentsModule } from './assessment-components/assessment-components.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { APP_GUARD } from '@nestjs/core';
@@ -83,7 +83,8 @@ import { GradingModule } from './grading/grading.module';
     SubscriptionsModule,
     SchoolsModule,
     SuperAdminModule,
-    GradingModule
+    GradingModule,
+    AssessmentComponentsModule,
     
   ],
   controllers: [AppController],
