@@ -352,7 +352,7 @@ export class ResultsService {
         examination: true,
         subject: true,
         term: true,
-        teacher: true,
+        teacher: {select: { id: true, firstName: true, lastName:true}},
       },
       orderBy: { createdAt: 'desc' },
     });

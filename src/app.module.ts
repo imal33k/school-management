@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { AssessmentComponentsModule } from './assessment-components/assessment-components.module';
+import { AssessmentComponentsModule } from './assessment-components/assessment-components.modules';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { APP_GUARD } from '@nestjs/core';
@@ -35,6 +35,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { GradingModule } from './grading/grading.module';
+import { ReportCardsModule } from './report-cards/report-cards.module';
 
 @Module({
   imports: [
@@ -85,6 +86,7 @@ import { GradingModule } from './grading/grading.module';
     SuperAdminModule,
     GradingModule,
     AssessmentComponentsModule,
+    ReportCardsModule,
     
   ],
   controllers: [AppController],

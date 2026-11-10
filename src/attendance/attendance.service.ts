@@ -597,6 +597,11 @@ export class AttendanceService {
       );
     }
 
+        // A teacher can only open a class they are assigned to
+    if (user.role === UserRole.TEACHER) {
+      const teacher = await this.getTeacherForUser(user, schoolId);
+      await this.ensureTeacherCanAccessClass(teacher.id, schoolClass.id);
+    }
     let normalizedDate: Date | undefined;
 
     if (date) {

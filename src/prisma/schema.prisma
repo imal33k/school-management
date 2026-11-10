@@ -38,37 +38,18 @@ model School {
   invitations                      SchoolInvitation[]
   gradeScales                      GradeScale[]
   assessmentComponents             AssessmentComponent[]
-  reportCards                      ReportCard[] 
-}
-
-model GradeScale {
-  id        String   @id @default(uuid())
-  schoolId  String
-  name      String
-  isDefault Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  school School      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  bands  GradeBand[]
-
-  @@unique([schoolId, name])
-  @@index([schoolId])
-}
-
-model GradeBand {
-  id           String  @id @default(uuid())
-  gradeScaleId String
-  grade        String
-  minScore     Float
-  remark       String?
-  points       Float?
-
-  gradeScale GradeScale @relation(fields: [gradeScaleId], references: [id], onDelete: Cascade)
-
-  @@unique([gradeScaleId, grade])
-  @@unique([gradeScaleId, minScore])
-  @@index([gradeScaleId])
+  reportCards                      ReportCard[]
+  timezone                         String                @default("Africa/Lagos")
+  currency                         String                @default("NGN")
+  principalName                    String?
+  motto                            String?
+  messageChannels                  MessageChannel[]      @default([EMAIL])
+  classLevels                      ClassLevel[]
+  studentDiscounts                 StudentDiscount[]
+  documents                        Document[]
+  promotions                       Promotion[]
+  refunds                          Refund[]
+  messageDeliveries                MessageDelivery[]
 }
 
 model User {
@@ -201,7 +182,11 @@ model Student {
   school          School            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   user            User?             @relation(fields: [userId], references: [id])
   guardians       StudentGuardian[]
-    reportCards   ReportCard[]
+
+  reportCards      ReportCard[]
+  discounts        StudentDiscount[]
+  documents        Document[]
+  promotions       Promotion[]
   @@unique([schoolId, admissionNumber])
   @@index([schoolId])
   @@index([lastName])
@@ -297,6 +282,7 @@ model Term {
   results           Result[]
   academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id], onDelete: Cascade)
 
+  studentDiscounts StudentDiscount[]
   @@unique([academicSessionId, type])
 }
 
@@ -319,6 +305,9 @@ model SchoolClass {
   school            School           @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   timetableEntries  TimetableEntry[]
 
+  levelId           String?
+  classLevel        ClassLevel?      @relation(fields: [levelId], references: [id], onDelete: SetNull)
+  feeStructures     FeeStructure[]
   @@unique([schoolId, academicSessionId, name])
   @@index([schoolId])
 }
@@ -425,7 +414,8 @@ model Examination {
   term      Term                 @relation(fields: [termId], references: [id], onDelete: Cascade)
   subjects  ExaminationSubject[]
   results   Result[]
-    reportCards   ReportCard[]
+
+  reportCards ReportCard[]
   @@index([schoolId])
   @@index([classId])
 }
@@ -442,25 +432,26 @@ model ExaminationSubject {
 }
 
 model Result {
-  id            String      @id @default(uuid())
-  studentId     String
-  examinationId String
-  subjectId     String
-  teacherId     String?
-  termId        String
-  caScore       Float?
-  examScore     Float?
-  totalScore    Float
-  grade         String?
-  remark        String?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  examination   Examination @relation(fields: [examinationId], references: [id], onDelete: Cascade)
-  student       Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  subject       Subject     @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  teacher       Teacher?    @relation(fields: [teacherId], references: [id])
-  term          Term        @relation(fields: [termId], references: [id], onDelete: Cascade)
-  componentScores   ResultComponentScore[]
+  id              String                 @id @default(uuid())
+  studentId       String
+  examinationId   String
+  subjectId       String
+  teacherId       String?
+  termId          String
+  caScore         Float?
+  examScore       Float?
+  totalScore      Float
+  grade           String?
+  remark          String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  examination     Examination            @relation(fields: [examinationId], references: [id], onDelete: Cascade)
+  student         Student                @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subject         Subject                @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacher         Teacher?               @relation(fields: [teacherId], references: [id])
+  term            Term                   @relation(fields: [termId], references: [id], onDelete: Cascade)
+  componentScores ResultComponentScore[]
+
   @@unique([studentId, examinationId, subjectId])
   @@index([studentId])
   @@index([examinationId])
@@ -479,6 +470,11 @@ model FeeStructure {
   term        Term      @relation(fields: [termId], references: [id], onDelete: Cascade)
   invoices    Invoice[]
 
+  levelId     String?
+  classId     String?
+  level       ClassLevel?      @relation(fields: [levelId], references: [id], onDelete: Restrict)
+  class       SchoolClass?     @relation(fields: [classId], references: [id], onDelete: Restrict)
+  discounts   StudentDiscount[]
   @@index([schoolId])
 }
 
@@ -501,6 +497,9 @@ model Invoice {
   term           Term          @relation(fields: [termId], references: [id], onDelete: Cascade)
   payments       Payment[]
 
+  discountAmount Decimal @default(0) @db.Decimal(14, 2)
+  discountNote   String?
+  installments   InvoiceInstallment[]
   @@unique([schoolId, invoiceNumber])
   @@index([studentId])
   @@index([schoolId])
@@ -522,6 +521,7 @@ model Payment {
   invoice   Invoice?      @relation(fields: [invoiceId], references: [id])
   student   Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
+  refunds   Refund[]
   @@index([schoolId])
   @@index([studentId])
 }
@@ -657,64 +657,6 @@ model AuditLog {
   @@index([createdAt])
 }
 
-model AssessmentComponent {
-  id        String   @id @default(uuid())
-  schoolId  String
-  name      String
-  maxScore  Float
-  sortOrder Int      @default(0)
-  isExam    Boolean  @default(false)
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  school School                 @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  scores ResultComponentScore[]
-
-  @@unique([schoolId, name])
-  @@index([schoolId])
-}
-
-model ResultComponentScore {
-  id          String @id @default(uuid())
-  resultId    String
-  componentId String
-  score       Float
-
-  result    Result              @relation(fields: [resultId], references: [id], onDelete: Cascade)
-  component AssessmentComponent @relation(fields: [componentId], references: [id], onDelete: Restrict)
-
-  @@unique([resultId, componentId])
-  @@index([componentId])
-}
-
-
-model ReportCard {
-  id              String           @id @default(uuid())
-  schoolId        String
-  studentId       String
-  examinationId   String
-  totalScore      Float            @default(0)
-  average         Float            @default(0)
-  position        Int?
-  classSize       Int              @default(0)
-  subjectCount    Int              @default(0)
-  teacherRemark   String?
-  principalRemark String?
-  status          ReportCardStatus @default(DRAFT)
-  generatedAt     DateTime         @default(now())
-  publishedAt     DateTime?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-
-  school      School      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  student     Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  examination Examination @relation(fields: [examinationId], references: [id], onDelete: Cascade)
-
-  @@unique([studentId, examinationId])
-  @@index([schoolId])
-  @@index([examinationId])
-}
 enum UserRole {
   SUPER_ADMIN
   SCHOOL_ADMIN
@@ -742,11 +684,6 @@ enum StudentStatus {
   GRADUATED
   SUSPENDED
   TRANSFERRED
-}
-
-enum ReportCardStatus {
-  DRAFT
-  PUBLISHED
 }
 
 enum Gender {
@@ -844,4 +781,290 @@ enum DayOfWeek {
   FRIDAY
   SATURDAY
   SUNDAY
+}
+
+model GradeScale {
+  id        String   @id @default(uuid())
+  schoolId  String
+  name      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  school School      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  bands  GradeBand[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+}
+
+model GradeBand {
+  id           String  @id @default(uuid())
+  gradeScaleId String
+  grade        String
+  minScore     Float
+  remark       String?
+  points       Float?
+
+  gradeScale GradeScale @relation(fields: [gradeScaleId], references: [id], onDelete: Cascade)
+
+  @@unique([gradeScaleId, grade])
+  @@unique([gradeScaleId, minScore])
+  @@index([gradeScaleId])
+}
+
+model AssessmentComponent {
+  id        String   @id @default(uuid())
+  schoolId  String
+  name      String
+  maxScore  Float
+  sortOrder Int      @default(0)
+  isExam    Boolean  @default(false)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  school School                 @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  scores ResultComponentScore[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+}
+
+model ResultComponentScore {
+  id          String @id @default(uuid())
+  resultId    String
+  componentId String
+  score       Float
+
+  result    Result              @relation(fields: [resultId], references: [id], onDelete: Cascade)
+  component AssessmentComponent @relation(fields: [componentId], references: [id], onDelete: Restrict)
+
+  @@unique([resultId, componentId])
+  @@index([componentId])
+}
+
+enum ReportCardStatus {
+  DRAFT
+  PUBLISHED
+}
+
+model ReportCard {
+  id              String           @id @default(uuid())
+  schoolId        String
+  studentId       String
+  examinationId   String
+  totalScore      Float            @default(0)
+  average         Float            @default(0)
+  position        Int?
+  classSize       Int              @default(0)
+  subjectCount    Int              @default(0)
+  teacherRemark   String?
+  principalRemark String?
+  status          ReportCardStatus @default(DRAFT)
+  generatedAt     DateTime         @default(now())
+  publishedAt     DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  school      School      @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  student     Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  examination Examination @relation(fields: [examinationId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, examinationId])
+  @@index([schoolId])
+  @@index([examinationId])
+}
+
+// ============================================================
+// Fees, student lifecycle, documents, messaging
+// ============================================================
+
+enum PromotionAction {
+  PROMOTED
+  REPEATED
+  GRADUATED
+  TRANSFERRED_OUT
+  CLASS_CHANGE
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED
+}
+
+enum RefundStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum MessageChannel {
+  EMAIL
+  SMS
+  WHATSAPP
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum DocumentKind {
+  BIRTH_CERTIFICATE
+  TRANSFER_CERTIFICATE
+  PREVIOUS_RESULT
+  MEDICAL
+  PHOTO
+  OTHER
+}
+
+// JSS 1, JSS 2, SS 3 ... in order, with what comes next
+model ClassLevel {
+  id          String   @id @default(uuid())
+  schoolId    String
+  name        String
+  sortOrder   Int      @default(0)
+  nextLevelId String?
+  isFinal     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  school         School         @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  nextLevel      ClassLevel?    @relation("LevelProgression", fields: [nextLevelId], references: [id], onDelete: SetNull)
+  previousLevels ClassLevel[]   @relation("LevelProgression")
+  classes        SchoolClass[]
+  feeStructures  FeeStructure[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+}
+
+// A scholarship / sibling discount / staff-child discount for one student
+model StudentDiscount {
+  id             String       @id @default(uuid())
+  schoolId       String
+  studentId      String
+  name           String
+  type           DiscountType
+  value          Float
+  feeStructureId String?
+  termId         String?
+  reason         String?
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  school       School        @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  student      Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  feeStructure FeeStructure? @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
+  term         Term?         @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId])
+  @@index([studentId])
+}
+
+// One dated slice of an invoice's payment plan
+model InvoiceInstallment {
+  id        String   @id @default(uuid())
+  invoiceId String
+  number    Int
+  dueDate   DateTime
+  amount    Decimal  @db.Decimal(14, 2)
+  createdAt DateTime @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([invoiceId, number])
+  @@index([invoiceId])
+}
+
+model Refund {
+  id                String       @id @default(uuid())
+  schoolId          String
+  paymentId         String
+  amount            Decimal      @db.Decimal(14, 2)
+  reason            String
+  status            RefundStatus @default(PROCESSING)
+  providerReference String?
+  failureReason     String?
+  createdById       String
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  school  School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@index([schoolId])
+  @@index([paymentId])
+}
+
+// History of what happened to a student: promoted, repeated, graduated, left...
+model Promotion {
+  id            String          @id @default(uuid())
+  schoolId      String
+  studentId     String
+  action        PromotionAction
+  fromClassName String?
+  toClassName   String?
+  fromClassId   String?
+  toClassId     String?
+  fromSessionId String?
+  toSessionId   String?
+  note          String?
+  performedById String
+  createdAt     DateTime        @default(now())
+
+  school  School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId])
+  @@index([studentId])
+}
+
+model Document {
+  id            String       @id @default(uuid())
+  schoolId      String
+  studentId     String
+  kind          DocumentKind @default(OTHER)
+  name          String
+  originalName  String
+  mimeType      String
+  size          Int
+  storageKey    String       @unique
+  uploadedById  String
+  createdAt     DateTime     @default(now())
+
+  school  School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId])
+  @@index([studentId])
+}
+
+// Every SMS / email / WhatsApp message waiting to go out, or already sent
+model MessageDelivery {
+  id            String         @id @default(uuid())
+  schoolId      String
+  userId        String?
+  channel       MessageChannel
+  to            String
+  subject       String?
+  body          String
+  event         String
+  dedupeKey     String?
+  status        MessageStatus  @default(PENDING)
+  attempts      Int            @default(0)
+  lastError     String?
+  nextAttemptAt DateTime       @default(now())
+  sentAt        DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([channel, dedupeKey])
+  @@index([status, nextAttemptAt])
+  @@index([schoolId])
 }
