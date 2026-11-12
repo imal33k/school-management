@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 
 import {
+  EnrollmentStatus,
   UserRole,
   DayOfWeek,
 } from '@prisma/client';
@@ -185,6 +186,62 @@ export class TimetableService {
           startTime: 'asc',
         },
       ],
+    });
+  }
+
+  async findChildTimetable(user: RequestUser, studentId: string) {
+    if (user.role !== UserRole.PARENT) {
+      throw new ForbiddenException(
+        'Only parents can view an individual child timetable',
+      );
+    }
+
+    const membership = await this.getMembership(user);
+    const student = await this.prisma.student.findFirst({
+      where: {
+        id: studentId,
+        schoolId: membership.schoolId,
+        guardians: {
+          some: {
+            parent: {
+              userId: user.id,
+              schoolId: membership.schoolId,
+            },
+          },
+        },
+      },
+      select: {
+        enrollments: {
+          where: { status: EnrollmentStatus.ACTIVE },
+          select: { classId: true },
+        },
+      },
+    });
+
+    if (!student) {
+      throw new NotFoundException('Student not found');
+    }
+
+    const classIds = student.enrollments.map(
+      (enrollment) => enrollment.classId,
+    );
+    if (classIds.length === 0) {
+      return [];
+    }
+
+    return this.prisma.timetableEntry.findMany({
+      where: {
+        classId: { in: classIds },
+        class: { schoolId: membership.schoolId },
+      },
+      include: {
+        class: true,
+        subject: true,
+        teacher: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+      },
+      orderBy: [{ day: 'asc' }, { startTime: 'asc' }],
     });
   }
 

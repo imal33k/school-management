@@ -12,6 +12,7 @@ import {
 import { UserRole } from '@prisma/client';
 
 import { GuardianService } from './guardian.service';
+import { TimetableService } from '../../timetable-entry/timetable-entry.service';
 
 import { CreateParentDto } from './dto/create-guardian.dto';
 import { UpdateParentDto } from './dto/update-guardian.dto';
@@ -27,6 +28,7 @@ import { Roles } from '../../auth/decorator/roles.decorator';
 export class GuardianController {
   constructor(
     private readonly parentService: GuardianService,
+    private readonly timetableService: TimetableService,
   ) {}
 
   @Post()
@@ -75,6 +77,15 @@ export class GuardianController {
     @Param('studentId') studentId: string,
   ){
     return this.parentService.findMyChild(user, studentId);
+  }
+
+  @Get('me/children/:studentId/timetable')
+  @Roles(UserRole.PARENT)
+  findMyChildTimetable(
+    @CurrentUser() user: RequestUser,
+    @Param('studentId') studentId: string,
+  ) {
+    return this.timetableService.findChildTimetable(user, studentId);
   }
 
   @Patch(':id')
