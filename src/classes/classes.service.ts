@@ -127,6 +127,15 @@ export class ClassesService {
     return this.prisma.schoolClass.findMany({
       where: {
         schoolId: membership.schoolId,
+        ...(user.role === UserRole.TEACHER && {
+  teachers: {
+    some: {
+      teacher: {
+        userId: user.id,
+      },
+    },
+  },
+}),
       },
       include: {
         academicSession: true,

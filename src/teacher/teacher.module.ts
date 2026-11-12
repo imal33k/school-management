@@ -3,11 +3,11 @@ import { PlansModule } from '../plans/plans.module';
 import { TeacherService } from './teacher.service';
 import { TeacherController } from './teacher.controller';
 import { AuditLogModule } from '../audit-log/audit-log.module';
-import { EmailService } from '../common/email.service';
+import { EmailModule } from '../common/email.module';
 
 @Module({
-  imports: [PlansModule, AuditLogModule],
+  imports: [PlansModule, AuditLogModule, EmailModule],
   controllers: [TeacherController],
-  providers: [TeacherService, EmailService],
+  providers: [TeacherService],
 })
 export class TeacherModule {}

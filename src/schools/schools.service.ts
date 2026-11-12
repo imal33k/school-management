@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -247,6 +248,17 @@ export class SchoolsService {
     const schoolId =
       await this.getSchoolId(user);
 
+    if (dto.timezone !== undefined) {
+      try {
+        new Intl.DateTimeFormat('en-US', { timeZone: dto.timezone });
+      } catch (error) {
+        if (error instanceof RangeError) {
+          throw new BadRequestException('timezone must be a valid IANA timezone');
+        }
+        throw error;
+      }
+    }
+
     const school =
       await this.prisma.school.findUnique({
         where: {
@@ -298,6 +310,12 @@ export class SchoolsService {
         ...(dto.logoUrl !== undefined
           ? {
               logoUrl: dto.logoUrl,
+            }
+          : {}),
+
+        ...(dto.timezone !== undefined
+          ? {
+              timezone: dto.timezone,
             }
           : {}),
       },

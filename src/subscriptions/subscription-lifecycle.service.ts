@@ -1,40 +1,18 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SubscriptionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
-export class SubscriptionLifecycleService
-  implements OnModuleInit, OnModuleDestroy
-{
-  private readonly logger = new Logger(SubscriptionLifecycleService.name);
-  private timer?: NodeJS.Timeout;
-
+export class SubscriptionLifecycleService {
   constructor(private readonly prisma: PrismaService) {}
 
-  onModuleInit() {
-    void this.expireDueSubscriptions();
-    this.timer = setInterval(
-      () => void this.expireDueSubscriptions(),
-      15 * 60 * 1000,
+  async processDueSubscriptions(now = new Date()) {
+    const pendingPaymentExpiry = new Date(
+      now.getTime() - 24 * 60 * 60 * 1000,
     );
-    this.timer.unref();
-  }
 
-  onModuleDestroy() {
-    if (this.timer) clearInterval(this.timer);
-  }
-
-  private async expireDueSubscriptions() {
-    try {
-      const pendingPaymentExpiry = new Date(
-        Date.now() - 24 * 60 * 60 * 1000,
-      );
-      await this.prisma.subscriptionPayment.updateMany({
+    return this.prisma.$transaction(async (tx) => {
+      const failedPayments = await tx.subscriptionPayment.updateMany({
         where: {
           status: 'PENDING',
           createdAt: { lte: pendingPaymentExpiry },
@@ -42,20 +20,19 @@ export class SubscriptionLifecycleService
         data: { status: 'FAILED' },
       });
 
-      await this.prisma.subscription.updateMany({
+      const expiredSubscriptions = await tx.subscription.updateMany({
         where: {
           status: {
             in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIAL],
           },
-          endDate: { lte: new Date() },
+          endDate: { lte: now },
         },
         data: { status: SubscriptionStatus.EXPIRED },
       });
-    } catch (error) {
-      this.logger.error(
-        'Failed to expire due subscriptions',
-        error instanceof Error ? error.stack : String(error),
-      );
-    }
-  }
+
+      return {
+        failedPayments: failedPayments.count,
+        expiredSubscriptions: expiredSubscriptions.count,
+      };
+    });
 }

@@ -907,6 +907,7 @@ enum MessageChannel {
 
 enum MessageStatus {
   PENDING
+  PROCESSING
   SENT
   FAILED
 }
@@ -1058,6 +1059,7 @@ model MessageDelivery {
   attempts      Int            @default(0)
   lastError     String?
   nextAttemptAt DateTime       @default(now())
+  claimedAt     DateTime?
   sentAt        DateTime?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
@@ -1066,5 +1068,6 @@ model MessageDelivery {
 
   @@unique([channel, dedupeKey])
   @@index([status, nextAttemptAt])
+  @@index([status, claimedAt])
   @@index([schoolId])
 }

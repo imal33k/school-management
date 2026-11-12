@@ -9,5 +9,6 @@ import { PlansModule } from '../plans/plans.module';
   imports: [PaymentsModule, PlansModule],
   controllers: [SubscriptionsController],
   providers: [SubscriptionsService, SubscriptionLifecycleService],
+  exports: [SubscriptionLifecycleService],
 })
 export class SubscriptionsModule {}

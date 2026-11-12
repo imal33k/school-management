@@ -35,4 +35,9 @@ export class UpdateSchoolDto {
   @IsUrl()
   @MaxLength(500)
   logoUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  timezone?: string;
 }

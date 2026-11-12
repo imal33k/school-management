@@ -36,12 +36,15 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { GradingModule } from './grading/grading.module';
 import { ReportCardsModule } from './report-cards/report-cards.module';
+import { ScheduleModule } from '@nestjs/schedule';
+import { ScheduledJobsModule } from './scheduled-jobs/scheduled-jobs.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {
         ttl: 60_000,
@@ -87,7 +90,7 @@ import { ReportCardsModule } from './report-cards/report-cards.module';
     GradingModule,
     AssessmentComponentsModule,
     ReportCardsModule,
-    
+    ScheduledJobsModule,
   ],
   controllers: [AppController],
   providers: [

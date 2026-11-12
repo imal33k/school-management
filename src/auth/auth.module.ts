@@ -3,10 +3,11 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { EmailService } from '../common/email.service';
+import { EmailModule } from '../common/email.module';
 
 @Module({
   imports: [
+    EmailModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -19,6 +20,6 @@ import { EmailService } from '../common/email.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, EmailService],
+  providers: [AuthService],
 })
 export class AuthModule {}
