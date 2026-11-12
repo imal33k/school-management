@@ -56,14 +56,16 @@ export class MessageDeliveryService {
       }
 
       if (claimed.channel !== MessageChannel.EMAIL) {
+        const message = `No delivery provider is configured for ${claimed.channel}`;
         await this.prisma.messageDelivery.update({
           where: { id: claimed.id },
           data: {
             status: MessageStatus.FAILED,
             claimedAt: null,
-            lastError: `No delivery provider is configured for ${claimed.channel}`,
+            lastError: message,
           },
         });
+        this.logger.error(`Message delivery ${claimed.id} failed: ${message}`);
         failed++;
         continue;
       }
@@ -85,8 +87,7 @@ export class MessageDeliveryService {
         });
         sent++;
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message : String(error);
+        const message = error instanceof Error ? error.message : String(error);
         const permanentFailure = claimed.attempts >= MAX_ATTEMPTS;
         const delayMinutes = Math.min(
           60,
@@ -121,11 +122,7 @@ export class MessageDeliveryService {
     return { considered: candidates.length, sent, failed, skipped };
   }
 
-  private async claim(
-    id: string,
-    now: Date,
-    staleClaimBefore: Date,
-  ) {
+  private async claim(id: string, now: Date, staleClaimBefore: Date) {
     return this.prisma.$transaction(async (tx) => {
       const result = await tx.messageDelivery.updateMany({
         where: {

@@ -1,8 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import {
-  Cron,
-  CronExpression,
-} from '@nestjs/schedule';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import {
   InvoiceStatus,
   MessageChannel,
@@ -106,20 +103,20 @@ export class ScheduledJobsService {
     timeZone: 'UTC',
   })
   async queueSchoolLocalReminders() {
-    const now = new Date();
-    const schools = await this.prisma.school.findMany({
-      where: { status: SchoolStatus.ACTIVE },
-      select: {
-        id: true,
-        name: true,
-        timezone: true,
-        email: true,
-        currency: true,
-        messageChannels: true,
-      },
-    });
-
     await this.runJob('queue-school-local-reminders', async () => {
+      const now = new Date();
+      const schools = await this.prisma.school.findMany({
+        where: { status: SchoolStatus.ACTIVE },
+        select: {
+          id: true,
+          name: true,
+          timezone: true,
+          email: true,
+          currency: true,
+          messageChannels: true,
+        },
+      });
+
       let eligibleSchools = 0;
       for (const school of schools) {
         try {
@@ -159,14 +156,8 @@ export class ScheduledJobsService {
     },
     today: string,
   ) {
-    const from = startOfLocalDate(
-      addDaysToDateKey(today, -7),
-      'UTC',
-    );
-    const until = startOfLocalDate(
-      addDaysToDateKey(today, 4),
-      'UTC',
-    );
+    const from = startOfLocalDate(addDaysToDateKey(today, -7), 'UTC');
+    const until = startOfLocalDate(addDaysToDateKey(today, 4), 'UTC');
     const invoices = await this.prisma.invoice.findMany({
       where: {
         schoolId: school.id,
@@ -265,10 +256,7 @@ export class ScheduledJobsService {
     today: string,
   ) {
     const from = startOfLocalDate(today, school.timezone);
-    const until = startOfLocalDate(
-      addDaysToDateKey(today, 8),
-      school.timezone,
-    );
+    const until = startOfLocalDate(addDaysToDateKey(today, 8), school.timezone);
     const subscriptions = await this.prisma.subscription.findMany({
       where: {
         schoolId: school.id,
@@ -324,10 +312,7 @@ export class ScheduledJobsService {
     return this.messageDelivery.enqueue(messages);
   }
 
-  private async runJob(
-    name: string,
-    work: () => Promise<unknown>,
-  ) {
+  private async runJob(name: string, work: () => Promise<unknown>) {
     try {
       const result = await work();
       this.logger.log(`${name} completed: ${JSON.stringify(result)}`);
@@ -339,4 +324,3 @@ export class ScheduledJobsService {
     }
   }
 }
-

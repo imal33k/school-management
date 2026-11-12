@@ -32,29 +32,22 @@ export class SchoolsService {
     };
   }
 
-  private async getSchoolId(
-    user: RequestUser,
-  ): Promise<string> {
-    const membership =
-      await this.prisma.schoolMembership.findFirst({
-        where: {
-          userId: user.id,
-          ...(user.schoolId ? { schoolId: user.schoolId } : {}),
-        },
-      });
+  private async getSchoolId(user: RequestUser): Promise<string> {
+    const membership = await this.prisma.schoolMembership.findFirst({
+      where: {
+        userId: user.id,
+        ...(user.schoolId ? { schoolId: user.schoolId } : {}),
+      },
+    });
 
     if (!membership) {
-      throw new ForbiddenException(
-        'You are not a member of any school',
-      );
+      throw new ForbiddenException('You are not a member of any school');
     }
 
     return membership.schoolId;
   }
 
-  private ensureCanManage(
-    user: RequestUser,
-  ) {
+  private ensureCanManage(user: RequestUser) {
     if (
       user.role !== UserRole.SCHOOL_ADMIN &&
       user.role !== UserRole.SUPER_ADMIN
@@ -65,34 +58,28 @@ export class SchoolsService {
     }
   }
 
-  async findMine(
-    user: RequestUser,
-  ) {
-    const schoolId =
-      await this.getSchoolId(user);
+  async findMine(user: RequestUser) {
+    const schoolId = await this.getSchoolId(user);
 
-    const school =
-      await this.prisma.school.findUnique({
-        where: {
-          id: schoolId,
-        },
-        include: {
-          _count: {
-            select: {
-              students: true,
-              teachers: true,
-              parents: true,
-              classes: true,
-              subjects: true,
-            },
+    const school = await this.prisma.school.findUnique({
+      where: {
+        id: schoolId,
+      },
+      include: {
+        _count: {
+          select: {
+            students: true,
+            teachers: true,
+            parents: true,
+            classes: true,
+            subjects: true,
           },
         },
-      });
+      },
+    });
 
     if (!school) {
-      throw new NotFoundException(
-        'School not found',
-      );
+      throw new NotFoundException('School not found');
     }
 
     return this.formatSchool(school);
@@ -126,9 +113,7 @@ export class SchoolsService {
     }
 
     const claimedAt = new Date();
-    const staleClaimBefore = new Date(
-      claimedAt.getTime() - 10 * 60 * 1000,
-    );
+    const staleClaimBefore = new Date(claimedAt.getTime() - 10 * 60 * 1000);
     const claimed = await this.prisma.school.updateMany({
       where: {
         id: schoolId,
@@ -171,49 +156,9 @@ export class SchoolsService {
     return { configured: true };
   }
 
-  async findOne(
-    id: string,
-    user: RequestUser,
-  ) {
+  async findOne(id: string, user: RequestUser) {
     if (user.role === UserRole.SUPER_ADMIN) {
-      const school =
-        await this.prisma.school.findUnique({
-          where: {
-            id,
-          },
-          include: {
-            _count: {
-              select: {
-                students: true,
-                teachers: true,
-                parents: true,
-                classes: true,
-                subjects: true,
-              },
-            },
-          },
-        });
-
-      if (!school) {
-        throw new NotFoundException(
-          'School not found',
-        );
-      }
-
-      return this.formatSchool(school);
-    }
-
-    const schoolId =
-      await this.getSchoolId(user);
-
-    if (schoolId !== id) {
-      throw new ForbiddenException(
-        'You do not have access to this school',
-      );
-    }
-
-    const school =
-      await this.prisma.school.findUnique({
+      const school = await this.prisma.school.findUnique({
         where: {
           id,
         },
@@ -230,46 +175,69 @@ export class SchoolsService {
         },
       });
 
+      if (!school) {
+        throw new NotFoundException('School not found');
+      }
+
+      return this.formatSchool(school);
+    }
+
+    const schoolId = await this.getSchoolId(user);
+
+    if (schoolId !== id) {
+      throw new ForbiddenException('You do not have access to this school');
+    }
+
+    const school = await this.prisma.school.findUnique({
+      where: {
+        id,
+      },
+      include: {
+        _count: {
+          select: {
+            students: true,
+            teachers: true,
+            parents: true,
+            classes: true,
+            subjects: true,
+          },
+        },
+      },
+    });
+
     if (!school) {
-      throw new NotFoundException(
-        'School not found',
-      );
+      throw new NotFoundException('School not found');
     }
 
     return this.formatSchool(school);
   }
 
-  async updateMine(
-    dto: UpdateSchoolDto,
-    user: RequestUser,
-  ) {
+  async updateMine(dto: UpdateSchoolDto, user: RequestUser) {
     this.ensureCanManage(user);
 
-    const schoolId =
-      await this.getSchoolId(user);
+    const schoolId = await this.getSchoolId(user);
 
     if (dto.timezone !== undefined) {
       try {
         new Intl.DateTimeFormat('en-US', { timeZone: dto.timezone });
       } catch (error) {
         if (error instanceof RangeError) {
-          throw new BadRequestException('timezone must be a valid IANA timezone');
+          throw new BadRequestException(
+            'timezone must be a valid IANA timezone',
+          );
         }
         throw error;
       }
     }
 
-    const school =
-      await this.prisma.school.findUnique({
-        where: {
-          id: schoolId,
-        },
-      });
+    const school = await this.prisma.school.findUnique({
+      where: {
+        id: schoolId,
+      },
+    });
 
     if (!school) {
-      throw new NotFoundException(
-        'School not found',
-      );
+      throw new NotFoundException('School not found');
     }
 
     const updated = await this.prisma.school.update({
@@ -323,28 +291,21 @@ export class SchoolsService {
     return this.formatSchool(updated);
   }
 
-  async updateStatus(
-    id: string,
-    status: SchoolStatus,
-    user: RequestUser,
-  ) {
+  async updateStatus(id: string, status: SchoolStatus, user: RequestUser) {
     if (user.role !== UserRole.SUPER_ADMIN) {
       throw new ForbiddenException(
         'Only super admins can change school status',
       );
     }
 
-    const school =
-      await this.prisma.school.findUnique({
-        where: {
-          id,
-        },
-      });
+    const school = await this.prisma.school.findUnique({
+      where: {
+        id,
+      },
+    });
 
     if (!school) {
-      throw new NotFoundException(
-        'School not found',
-      );
+      throw new NotFoundException('School not found');
     }
 
     const updated = await this.prisma.school.update({
@@ -358,13 +319,9 @@ export class SchoolsService {
     return this.formatSchool(updated);
   }
 
-  async findAll(
-    user: RequestUser,
-  ) {
+  async findAll(user: RequestUser) {
     if (user.role !== UserRole.SUPER_ADMIN) {
-      throw new ForbiddenException(
-        'Only super admins can view all schools',
-      );
+      throw new ForbiddenException('Only super admins can view all schools');
     }
 
     const schools = await this.prisma.school.findMany({

@@ -52,15 +52,15 @@ import { ScheduledJobsModule } from './scheduled-jobs/scheduled-jobs.module';
       },
     ]),
     JwtModule.registerAsync({
-  imports: [ConfigModule],
-  inject: [ConfigService],
-  useFactory: (configService: ConfigService) => ({
-    secret: configService.getOrThrow<string>('JWT_SECRET'),
-    signOptions: {
-      expiresIn: '15m',
-    },
-  }),
-}),
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.getOrThrow<string>('JWT_SECRET'),
+        signOptions: {
+          expiresIn: '15m',
+        },
+      }),
+    }),
     PrismaModule,
     AuthModule,
     SchoolMembershipModule,

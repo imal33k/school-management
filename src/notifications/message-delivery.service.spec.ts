@@ -80,9 +80,9 @@ describe('MessageDeliveryService', () => {
 
   it('does not send a row claimed by another worker', async () => {
     const { service, email, tx } = setup();
-    tx.messageDelivery.updateMany.mockImplementation(
-      async () => ({ count: 0 }),
-    );
+    tx.messageDelivery.updateMany.mockImplementation(async () => ({
+      count: 0,
+    }));
 
     await expect(service.dispatchPendingBatch()).resolves.toEqual({
       considered: 1,
