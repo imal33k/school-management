@@ -35,4 +35,5 @@ export class SubscriptionLifecycleService {
         expiredSubscriptions: expiredSubscriptions.count,
       };
     });
+  }
 }

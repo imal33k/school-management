@@ -114,33 +114,40 @@ export class ScheduledJobsService {
         name: true,
         timezone: true,
         email: true,
+        currency: true,
         messageChannels: true,
       },
     });
 
-    for (const school of schools) {
-      try {
-        const localTime = zonedDateParts(now, school.timezone);
-        if (
-          localTime.hour !== 7 ||
-          localTime.minute >= REMINDER_SEND_WINDOW_MINUTES ||
-          !school.messageChannels.includes(MessageChannel.EMAIL)
-        ) {
-          continue;
-        }
+    await this.runJob('queue-school-local-reminders', async () => {
+      let eligibleSchools = 0;
+      for (const school of schools) {
+        try {
+          const localTime = zonedDateParts(now, school.timezone);
+          if (
+            localTime.hour !== 7 ||
+            localTime.minute >= REMINDER_SEND_WINDOW_MINUTES ||
+            !school.messageChannels.includes(MessageChannel.EMAIL)
+          ) {
+            continue;
+          }
 
-        const today = localDateKey(now, school.timezone);
-        await this.queueInvoiceReminders(school, today);
-        await this.queueSubscriptionReminders(school, today);
-      } catch (error) {
-        this.logger.error(
-          `Failed to queue reminders for school ${school.id}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          error instanceof Error ? error.stack : undefined,
-        );
+          eligibleSchools++;
+          const today = localDateKey(now, school.timezone);
+          await this.queueInvoiceReminders(school, today);
+          await this.queueSubscriptionReminders(school, today);
+        } catch (error) {
+          this.logger.error(
+            `Failed to queue reminders for school ${school.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            error instanceof Error ? error.stack : undefined,
+          );
+        }
       }
-    }
+
+      return { eligibleSchools };
+    });
   }
 
   private async queueInvoiceReminders(
@@ -148,16 +155,17 @@ export class ScheduledJobsService {
       id: string;
       name: string;
       timezone: string;
+      currency: string;
     },
     today: string,
   ) {
     const from = startOfLocalDate(
       addDaysToDateKey(today, -7),
-      school.timezone,
+      'UTC',
     );
     const until = startOfLocalDate(
       addDaysToDateKey(today, 4),
-      school.timezone,
+      'UTC',
     );
     const invoices = await this.prisma.invoice.findMany({
       where: {
@@ -197,7 +205,7 @@ export class ScheduledJobsService {
     for (const invoice of invoices) {
       if (!invoice.dueDate) continue;
 
-      const dueDate = localDateKey(invoice.dueDate, school.timezone);
+      const dueDate = localDateKey(invoice.dueDate, 'UTC');
       const daysUntilDue = daysBetweenDateKeys(today, dueDate);
       const reminder = this.invoiceReminderType(daysUntilDue);
       if (!reminder) continue;
@@ -224,7 +232,7 @@ export class ScheduledJobsService {
             `Hello,`,
             ``,
             `This is a reminder about invoice ${invoice.invoiceNumber} for ${invoice.student.firstName} ${invoice.student.lastName}.`,
-            `Amount due: ${invoice.amount.toString()}`,
+            `Amount due: ${school.currency} ${invoice.amount.minus(invoice.amountPaid).toFixed(2)}`,
             `Due date: ${dueDate}`,
             `Reminder: ${reminder}`,
             ``,
