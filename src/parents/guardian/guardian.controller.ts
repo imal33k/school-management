@@ -43,7 +43,8 @@ export class GuardianController {
 
   @Get('me')
   @Roles(UserRole.PARENT)
-  me(@CurrentUser() user: RequestUser) { return this.parentService.findMe(user); }
+  me(@CurrentUser() user: RequestUser) 
+  { return this.parentService.findMe(user); }
 
   @Get()
   @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN)
@@ -65,6 +66,15 @@ export class GuardianController {
       user,
       id,
     );
+  }
+
+  @Get('me/children/:studentId')
+  @Roles(UserRole.PARENT)
+  async findMyChild(
+    @CurrentUser() user: RequestUser,
+    @Param('studentId') studentId: string,
+  ){
+    return this.parentService.findMyChild(user, studentId);
   }
 
   @Patch(':id')

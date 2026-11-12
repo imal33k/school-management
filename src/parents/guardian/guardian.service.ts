@@ -108,6 +108,29 @@ export class GuardianService {
     return parent;
   }
 
+  async findMyChild(user:RequestUser, studentId:string) {
+   if(user.role !== UserRole.PARENT) {
+    throw new ForbiddenException(
+      'Only Parent can access this resource' )
+    }
+    const membership = await this.prisma.schoolMembership.findFirst({
+      where:{ userId: user.id, ...(user.schoolId ? { schoolId: user.schoolId } : {})}
+    })
+    if (!membership){
+      throw new NotFoundException(
+        'You are not a member of any school',
+      );
+    }
+    const student = await this.prisma.student.findFirst({
+      where: {id: studentId, schoolId: membership.schoolId,
+        guardians: { some: { parent: {userId: user.id, schoolId: membership.schoolId}}},
+        include: {enrollments:{ include: {class: true, academicSession:true}},
+        results: true, attendance:{ orderBy: { date: 'desc'},
+         take:100,
+        },  invoices: { include:{ term:true, payments: true, feeStructure: true}}
+      }}
+    })
+  }
   async findAll(user: RequestUser, query: PaginationQueryDto = new PaginationQueryDto()) {
     this.ensureAdmin(user);
     const membership =

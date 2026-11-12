@@ -1,8 +1,13 @@
-import { describe, expect, it, jest } from '@jest/globals';
+import { Logger } from '@nestjs/common';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { MessageChannel, MessageStatus } from '@prisma/client';
 import { EmailService } from '../common/email.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MessageDeliveryService } from './message-delivery.service';
+
+afterEach(() => {
+  jest.restoreAllMocks();
+});
 
 describe('MessageDeliveryService', () => {
   function setup() {
@@ -95,6 +100,9 @@ describe('MessageDeliveryService', () => {
 
   it('requeues failed email delivery with a retry time', async () => {
     const { service, prisma, email } = setup();
+    const errorLog = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
     email.send.mockImplementation(async () => {
       throw new Error('SMTP temporarily unavailable');
     });
@@ -113,5 +121,6 @@ describe('MessageDeliveryService', () => {
         }),
       }),
     );
+    expect(errorLog).toHaveBeenCalled();
   });
 });

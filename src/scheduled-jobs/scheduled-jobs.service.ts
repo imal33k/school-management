@@ -23,7 +23,6 @@ import { SubscriptionLifecycleService } from '../subscriptions/subscription-life
 
 const LAGOS_TIME_ZONE = 'Africa/Lagos';
 const SENT_MESSAGE_RETENTION_DAYS = 90;
-const REMINDER_SEND_WINDOW_MINUTES = 5;
 
 @Injectable()
 export class ScheduledJobsService {
@@ -98,7 +97,7 @@ export class ScheduledJobsService {
     );
   }
 
-  @Cron(CronExpression.EVERY_MINUTE, {
+  @Cron('0,15,30,45 * * * *', {
     name: 'queue-school-local-reminders',
     timeZone: 'UTC',
   })
@@ -123,7 +122,7 @@ export class ScheduledJobsService {
           const localTime = zonedDateParts(now, school.timezone);
           if (
             localTime.hour !== 7 ||
-            localTime.minute >= REMINDER_SEND_WINDOW_MINUTES ||
+            localTime.minute !== 0 ||
             !school.messageChannels.includes(MessageChannel.EMAIL)
           ) {
             continue;
