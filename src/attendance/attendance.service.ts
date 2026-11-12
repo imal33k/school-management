@@ -9,6 +9,9 @@ import {
 import {
   AttendanceStatus,
   EnrollmentStatus,
+  MessageChannel,
+  NotificationType,
+  type Prisma,
   UserRole,
 } from '@prisma/client';
 
@@ -17,6 +20,8 @@ import { RequestUser } from '../auth/decorator/current-user.decorator';
 import { BulkAttendanceDto } from './dto/bulk-attendance.dto';
 import { CreateAttendanceDto } from './dto/create-attendance.dto';
 import { UpdateAttendanceDto } from './dto/update-attendance.dto';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { startOfLocalDate } from '../common/timezone';
 
 @Injectable()
 export class AttendanceService {
@@ -95,6 +100,57 @@ export class AttendanceService {
     return teacher;
   }
 
+  private async getTeacherAttendanceContext(user: RequestUser) {
+    if (user.role !== UserRole.TEACHER) {
+      throw new ForbiddenException(
+        'Only teachers can view their class attendance',
+      );
+    }
+
+    const schoolId = await this.getSchoolId(user);
+    const teacher = await this.getTeacherForUser(user, schoolId);
+
+    return { schoolId, teacher };
+  }
+
+  private async getTeacherAssignedClassIds(
+    teacherId: string,
+    schoolId: string,
+  ) {
+    const assignments = await this.prisma.classTeacher.findMany({
+      where: {
+        teacherId,
+        class: { schoolId },
+      },
+      select: { classId: true },
+    });
+
+    return assignments.map((assignment) => assignment.classId);
+  }
+
+  private async findPaginatedTeacherAttendance(
+    where: Prisma.AttendanceWhereInput,
+    query: PaginationQueryDto,
+  ) {
+    const page = query.getPage();
+    const limit = query.getLimit();
+    const [data, total] = await Promise.all([
+      this.prisma.attendance.findMany({
+        where,
+        include: { student: true, class: true },
+        orderBy: [{ date: 'desc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.attendance.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
   private async ensureTeacherCanAccessClass(
     teacherId: string,
     classId: string,
@@ -113,6 +169,135 @@ export class AttendanceService {
       throw new ForbiddenException(
         'You are not assigned to this class',
       );
+    }
+  }
+
+  private formatAttendanceDate(date: Date, timezone: string) {
+    const dateKey = date.toISOString().slice(0, 10);
+    const localMidnight = startOfLocalDate(dateKey, timezone);
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      dateStyle: 'long',
+    }).format(localMidnight);
+  }
+
+  private async queueAttendanceNotifications(
+    tx: Prisma.TransactionClient,
+    schoolId: string,
+    events: Array<{
+      studentId: string;
+      date: Date;
+      status: AttendanceStatus;
+      eventKey: string;
+    }>,
+  ) {
+    const alertEvents = events.filter(
+      ({ status }) =>
+        status === AttendanceStatus.ABSENT ||
+        status === AttendanceStatus.LATE,
+    );
+    if (alertEvents.length === 0) return;
+
+    const school = await tx.school.findUniqueOrThrow({
+      where: { id: schoolId },
+      select: { name: true, timezone: true, messageChannels: true },
+    });
+    const students = await tx.student.findMany({
+      where: {
+        id: { in: [...new Set(alertEvents.map(({ studentId }) => studentId))] },
+        schoolId,
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        guardians: {
+          where: { parent: { schoolId } },
+          select: {
+            parent: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                userId: true,
+                user: { select: { email: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+    const studentById = new Map(students.map((student) => [student.id, student]));
+    const emailDeliveries: Prisma.MessageDeliveryCreateManyInput[] = [];
+
+    for (const event of alertEvents) {
+      const student = studentById.get(event.studentId);
+      if (!student) continue;
+
+      const statusText =
+        event.status === AttendanceStatus.ABSENT ? 'absent' : 'late';
+      const studentName = `${student.firstName} ${student.lastName}`.trim();
+      const localDate = this.formatAttendanceDate(event.date, school.timezone);
+      const notificationTitle = `Attendance Alert - ${student.firstName}`;
+      const notificationMessage =
+        `${studentName} was marked ${statusText} on ${localDate}. ` +
+        `Please contact ${school.name} if you need further clarification.`;
+      const userIds = new Set<string>();
+
+      for (const { parent } of student.guardians) {
+        if (parent.userId) userIds.add(parent.userId);
+
+        const recipientEmail = parent.email?.trim() || parent.user?.email;
+        if (
+          recipientEmail &&
+          school.messageChannels.includes(MessageChannel.EMAIL)
+        ) {
+          emailDeliveries.push({
+            schoolId,
+            userId: parent.userId,
+            channel: MessageChannel.EMAIL,
+            to: recipientEmail,
+            subject: notificationTitle,
+            body: [
+              `Hello ${parent.firstName || 'Parent'},`,
+              '',
+              `This is to inform you that ${studentName} was marked ${statusText} on ${localDate}.`,
+              '',
+              `Please contact ${school.name} if you need further clarification.`,
+              '',
+              'Regards,',
+              'School Administration',
+            ].join('\n'),
+            event: 'ATTENDANCE_ALERT',
+            dedupeKey: `attendance:${event.eventKey}:${parent.id}`,
+          });
+        }
+      }
+
+      if (userIds.size > 0) {
+        await tx.notification.upsert({
+          where: { eventKey: `attendance:${event.eventKey}` },
+          update: {},
+          create: {
+            schoolId,
+            title: notificationTitle,
+            message: notificationMessage,
+            type: NotificationType.ATTENDANCE,
+            eventKey: `attendance:${event.eventKey}`,
+            recipients: {
+              create: [...userIds].map((userId) => ({ userId })),
+            },
+          },
+        });
+      }
+    }
+
+    if (emailDeliveries.length > 0) {
+      await tx.messageDelivery.createMany({
+        data: emailDeliveries,
+        skipDuplicates: true,
+      });
     }
   }
 
@@ -216,20 +401,33 @@ export class AttendanceService {
       );
     }
 
-    return this.prisma.attendance.create({
-      data: {
-        studentId: student.id,
-        classId: schoolClass.id,
-        teacherId,
-        date,
-        status: dto.status,
-        note: dto.note,
-      },
-      include: {
-        student: true,
-        class: true,
-        teacher: true,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const attendance = await tx.attendance.create({
+        data: {
+          studentId: student.id,
+          classId: schoolClass.id,
+          teacherId,
+          date,
+          status: dto.status,
+          note: dto.note,
+        },
+        include: {
+          student: true,
+          class: true,
+          teacher: true,
+        },
+      });
+
+      await this.queueAttendanceNotifications(tx, schoolId, [
+        {
+          studentId: attendance.studentId,
+          date: attendance.date,
+          status: attendance.status,
+          eventKey: `${attendance.id}:created:${attendance.status}`,
+        },
+      ]);
+
+      return attendance;
     });
   }
 
@@ -292,10 +490,25 @@ export class AttendanceService {
       );
     }
 
-    // 5. Save everything, or nothing. upsert = update if it exists, otherwise create.
-    await this.prisma.$transaction(
-      dto.records.map((record) =>
-        this.prisma.attendance.upsert({
+    // Save attendance and its outbox notifications as one transaction.
+    await this.prisma.$transaction(async (tx) => {
+      const existingRecords = await tx.attendance.findMany({
+        where: { studentId: { in: studentIds }, date },
+        select: { id: true, studentId: true, status: true, updatedAt: true },
+      });
+      const existingByStudent = new Map(
+        existingRecords.map((record) => [record.studentId, record]),
+      );
+      const alertEvents: Array<{
+        studentId: string;
+        date: Date;
+        status: AttendanceStatus;
+        eventKey: string;
+      }> = [];
+
+      for (const record of dto.records) {
+        const existing = existingByStudent.get(record.studentId);
+        const attendance = await tx.attendance.upsert({
           where: {
             studentId_date: { studentId: record.studentId, date },
           },
@@ -313,9 +526,22 @@ export class AttendanceService {
             status: record.status,
             note: record.note ?? null,
           },
-        }),
-      ),
-    );
+        });
+
+        if (!existing || existing.status !== attendance.status) {
+          alertEvents.push({
+            studentId: attendance.studentId,
+            date: attendance.date,
+            status: attendance.status,
+            eventKey: existing
+              ? `${attendance.id}:from:${existing.updatedAt.toISOString()}:${attendance.status}`
+              : `${attendance.id}:created:${attendance.status}`,
+          });
+        }
+      }
+
+      await this.queueAttendanceNotifications(tx, schoolId, alertEvents);
+    });
 
     // 6. Reply with a short summary
     const counts: Record<string, number> = {};
@@ -535,6 +761,99 @@ export class AttendanceService {
     return this.prisma.attendance.findMany({ where: { studentId: student.id }, include: { class: true, teacher: true }, orderBy: { date: 'desc' } });
   }
 
+  async findTeacherAttendance(
+    user: RequestUser,
+    query: PaginationQueryDto = new PaginationQueryDto(),
+  ) {
+    const { schoolId, teacher } =
+      await this.getTeacherAttendanceContext(user);
+    const classIds = await this.getTeacherAssignedClassIds(
+      teacher.id,
+      schoolId,
+    );
+
+    return this.findPaginatedTeacherAttendance(
+      {
+        classId: { in: classIds },
+        class: { schoolId },
+      },
+      query,
+    );
+  }
+
+  async findTeacherClassAttendance(
+    classId: string,
+    user: RequestUser,
+    query: PaginationQueryDto = new PaginationQueryDto(),
+  ) {
+    const { schoolId, teacher } =
+      await this.getTeacherAttendanceContext(user);
+    const schoolClass = await this.prisma.schoolClass.findFirst({
+      where: { id: classId, schoolId },
+      select: { id: true },
+    });
+
+    if (!schoolClass) {
+      throw new NotFoundException('Class not found');
+    }
+
+    await this.ensureTeacherCanAccessClass(teacher.id, schoolClass.id);
+
+    return this.findPaginatedTeacherAttendance(
+      {
+        classId: schoolClass.id,
+        class: {
+          schoolId,
+          teachers: { some: { teacherId: teacher.id } },
+        },
+      },
+      query,
+    );
+  }
+
+  async findTeacherStudentAttendance(
+    studentId: string,
+    user: RequestUser,
+    query: PaginationQueryDto = new PaginationQueryDto(),
+  ) {
+    const { schoolId, teacher } =
+      await this.getTeacherAttendanceContext(user);
+    const classIds = await this.getTeacherAssignedClassIds(
+      teacher.id,
+      schoolId,
+    );
+    const student = await this.prisma.student.findFirst({
+      where: {
+        id: studentId,
+        schoolId,
+        enrollments: {
+          some: {
+            status: EnrollmentStatus.ACTIVE,
+            classId: { in: classIds },
+            class: { schoolId },
+          },
+        },
+      },
+      select: { id: true },
+    });
+
+    if (!student) {
+      throw new NotFoundException('Student not found');
+    }
+
+    return this.findPaginatedTeacherAttendance(
+      {
+        studentId: student.id,
+        classId: { in: classIds },
+        class: {
+          schoolId,
+          teachers: { some: { teacherId: teacher.id } },
+        },
+      },
+      query,
+    );
+  }
+
   async findAll(
     user: RequestUser,
     date?: string,
@@ -745,27 +1064,39 @@ export class AttendanceService {
       );
     }
 
-    return this.prisma.attendance.update({
-      where: {
-        id,
-      },
-      data: {
-        ...(dto.status !== undefined
-          ? {
-              status: dto.status,
-            }
-          : {}),
-        ...(dto.note !== undefined
-          ? {
-              note: dto.note,
-            }
-          : {}),
-      },
-      include: {
-        student: true,
-        class: true,
-        teacher: true,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const current = await tx.attendance.findFirst({
+        where: { id, class: { schoolId } },
+      });
+      if (!current) {
+        throw new NotFoundException('Attendance record not found');
+      }
+
+      const updated = await tx.attendance.update({
+        where: { id },
+        data: {
+          ...(dto.status !== undefined ? { status: dto.status } : {}),
+          ...(dto.note !== undefined ? { note: dto.note } : {}),
+        },
+        include: {
+          student: true,
+          class: true,
+          teacher: true,
+        },
+      });
+
+      if (current.status !== updated.status) {
+        await this.queueAttendanceNotifications(tx, schoolId, [
+          {
+            studentId: updated.studentId,
+            date: updated.date,
+            status: updated.status,
+            eventKey: `${updated.id}:from:${current.updatedAt.toISOString()}:${updated.status}`,
+          },
+        ]);
+      }
+
+      return updated;
     });
   }
 

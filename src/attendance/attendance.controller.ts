@@ -19,6 +19,7 @@ import {
   CurrentUser,
   type RequestUser,
 } from '../auth/decorator/current-user.decorator';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { RosterQueryDto } from './dto/roster-query.dto';
 import { SummaryQueryDto } from './dto/summary-query.dto';
 
@@ -46,6 +47,43 @@ export class AttendanceController {
 
   @Get('me')
   findMine(@CurrentUser() user: RequestUser) { return this.attendanceService.findMine(user); }
+
+  @Get('teacher/me')
+  @Roles(UserRole.TEACHER)
+  findTeacherAttendance(
+    @CurrentUser() user: RequestUser,
+    @Query() query: PaginationQueryDto,
+  ) {
+    return this.attendanceService.findTeacherAttendance(user, query);
+  }
+
+  @Get('teacher/me/classes/:classId')
+  @Roles(UserRole.TEACHER)
+  findTeacherClassAttendance(
+    @Param('classId') classId: string,
+    @CurrentUser() user: RequestUser,
+    @Query() query: PaginationQueryDto,
+  ) {
+    return this.attendanceService.findTeacherClassAttendance(
+      classId,
+      user,
+      query,
+    );
+  }
+
+  @Get('teacher/me/students/:studentId')
+  @Roles(UserRole.TEACHER)
+  findTeacherStudentAttendance(
+    @Param('studentId') studentId: string,
+    @CurrentUser() user: RequestUser,
+    @Query() query: PaginationQueryDto,
+  ) {
+    return this.attendanceService.findTeacherStudentAttendance(
+      studentId,
+      user,
+      query,
+    );
+  }
 
   @Get()
   findAll(

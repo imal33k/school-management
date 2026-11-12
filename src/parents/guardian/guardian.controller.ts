@@ -79,6 +79,25 @@ export class GuardianController {
     return this.parentService.findMyChild(user, studentId);
   }
 
+  @Get('me/attendance')
+  @Roles(UserRole.PARENT)
+  findMyAttendance(
+    @CurrentUser() user: RequestUser,
+    @Query() query: PaginationQueryDto,
+  ) {
+    return this.parentService.findMyAttendance(user, query);
+  }
+
+  @Get('me/children/:studentId/attendance')
+  @Roles(UserRole.PARENT)
+  findChildAttendance(
+    @CurrentUser() user: RequestUser,
+    @Param('studentId') studentId: string,
+    @Query() query: PaginationQueryDto,
+  ) {
+    return this.parentService.findChildAttendance(user, studentId, query);
+  }
+
   @Get('me/children/:studentId/timetable')
   @Roles(UserRole.PARENT)
   findMyChildTimetable(

@@ -11,7 +11,7 @@ import {
   RequestUser,
 } from '../../auth/decorator/current-user.decorator';
 
-import { UserRole } from '@prisma/client';
+import { UserRole, type Prisma } from '@prisma/client';
 
 import { CreateParentDto } from './dto/create-guardian.dto';
 import { UpdateParentDto } from './dto/update-guardian.dto';
@@ -53,6 +53,88 @@ export class GuardianService {
     }
 
     return membership;
+  }
+
+  private async getParentAttendanceContext(user: RequestUser) {
+    if (user.role !== UserRole.PARENT) {
+      throw new ForbiddenException(
+        "Only parents can view their children's attendance",
+      );
+    }
+
+    const membership = await this.getMembership(user);
+    const parent = await this.prisma.parent.findFirst({
+      where: {
+        userId: user.id,
+        schoolId: membership.schoolId,
+      },
+      select: { id: true },
+    });
+
+    if (!parent) {
+      throw new NotFoundException('Parent profile not found');
+    }
+
+    return { parentId: parent.id, schoolId: membership.schoolId };
+  }
+
+  private async findPaginatedAttendance(
+    where: Prisma.AttendanceWhereInput,
+    query: PaginationQueryDto,
+  ) {
+    const page = query.getPage();
+    const limit = query.getLimit();
+    const [data, total] = await Promise.all([
+      this.prisma.attendance.findMany({
+        where,
+        include: {
+          student: {
+            select: {
+              id: true,
+              admissionNumber: true,
+              firstName: true,
+              middleName: true,
+              lastName: true,
+            },
+          },
+          class: {
+            select: { id: true, name: true, level: true },
+          },
+        },
+        orderBy: [{ date: 'desc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.attendance.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  async findMyAttendance(
+    user: RequestUser,
+    query: PaginationQueryDto = new PaginationQueryDto(),
+  ) {
+    const { parentId, schoolId } =
+      await this.getParentAttendanceContext(user);
+    const children = await this.prisma.studentGuardian.findMany({
+      where: {
+        parentId,
+        student: { schoolId },
+      },
+      select: { studentId: true },
+    });
+
+    return this.findPaginatedAttendance(
+      {
+        studentId: { in: children.map((child) => child.studentId) },
+        class: { schoolId },
+      },
+      query,
+    );
   }
 
   async create(
@@ -131,6 +213,36 @@ export class GuardianService {
       }}
     })
   }
+
+  async findChildAttendance(
+    user: RequestUser,
+    studentId: string,
+    query: PaginationQueryDto = new PaginationQueryDto(),
+  ){
+    const { parentId, schoolId } =
+      await this.getParentAttendanceContext(user);
+    const student = await this.prisma.student.findFirst({
+      where: {
+        id: studentId,
+        schoolId,
+        guardians: { some: { parentId } },
+      },
+      select: { id: true },
+    });
+
+    if (!student) {
+      throw new NotFoundException('Student not found');
+    }
+
+    return this.findPaginatedAttendance(
+      {
+        studentId: student.id,
+        class: { schoolId },
+      },
+      query,
+    );
+  }
+  
   async findAll(user: RequestUser, query: PaginationQueryDto = new PaginationQueryDto()) {
     this.ensureAdmin(user);
     const membership =

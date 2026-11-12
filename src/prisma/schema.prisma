@@ -585,6 +585,7 @@ model Notification {
   title      String
   message    String
   type       NotificationType
+  eventKey   String?                 @unique
   createdAt  DateTime                @default(now())
   school     School                  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
   recipients NotificationRecipient[]
