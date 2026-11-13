@@ -395,6 +395,27 @@ export class TeacherService {
     };
   }
 
+  async findMe(user: RequestUser) {
+    if (user.role !== UserRole.TEACHER) {
+      throw new ForbiddenException('Only teachers can view their own profile');
+    }
+
+    const membership = await this.getMembership(user);
+    const teacher = await this.prisma.teacher.findFirst({
+      where: {
+        userId: user.id,
+        schoolId: membership.schoolId,
+      },
+      select: { id: true },
+    });
+
+    if (!teacher) {
+      throw new NotFoundException('Teacher profile not found');
+    }
+
+    return this.findOne(user, teacher.id);
+  }
+
   async findOne(user: RequestUser, id: string) {
     const membership = await this.getMembership(user);
 

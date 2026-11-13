@@ -12,6 +12,10 @@ import { StudentModule } from './student/student.module';
 import { OnboardingModule } from './onboarding/onboarding.module';
 import { TeacherModule } from './teacher/teacher.module';
 import { ClassesModule } from './classes/classes.module';
+import { ClassLevelsModule } from './class-levels/class-levels.module';
+import { DocumentsModule } from './documents/documents.module';
+import { EnrollmentModule } from './enrollment/enrollment.module';
+import { StudentLifecycleModule } from './student-lifecycle/student-lifestyle.module';
 import { SubjectModule } from './subject/subject.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { ExaminationModule } from './examination/examination.module';
@@ -68,6 +72,10 @@ import { ScheduledJobsModule } from './scheduled-jobs/scheduled-jobs.module';
     OnboardingModule,
     TeacherModule,
     ClassesModule,
+    ClassLevelsModule,
+    DocumentsModule,
+    EnrollmentModule,
+    StudentLifecycleModule,
     SubjectModule,
     AttendanceModule,
     ExaminationModule,

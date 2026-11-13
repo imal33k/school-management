@@ -58,6 +58,14 @@ export class TeacherController {
     return this.teacherService.findAll(user, query);
   }
 
+  @Roles(UserRole.TEACHER)
+  @RequireSchoolAccess()
+  @UseGuards(SchoolAccessGuard)
+  @Get('me')
+  findMe(@CurrentUser() user: RequestUser) {
+    return this.teacherService.findMe(user);
+  }
+
   @Roles(UserRole.SCHOOL_ADMIN, UserRole.SUPER_ADMIN, UserRole.TEACHER)
   @RequireSchoolAccess()
   @UseGuards(SchoolAccessGuard)
