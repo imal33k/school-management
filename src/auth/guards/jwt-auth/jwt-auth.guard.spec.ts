@@ -81,6 +81,8 @@ describe('JwtAuthGuard tenant access', () => {
     prisma.user.findUnique.mockResolvedValue({
       id: 'user-1',
       email: 'admin@example.test',
+      firstName: 'Ada',
+      lastName: 'Lovelace',
       role: UserRole.SCHOOL_ADMIN,
       status: UserStatus.ACTIVE,
       mustChangePassword,
@@ -145,6 +147,24 @@ describe('JwtAuthGuard tenant access', () => {
     );
 
     await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
+
+  it('attaches the current user profile to the request', async () => {
+    setUser(
+      SchoolStatus.ACTIVE,
+      UserRole.SCHOOL_ADMIN,
+      SubscriptionStatus.ACTIVE,
+    );
+
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(request.user).toEqual(
+      expect.objectContaining({
+        firstName: 'Ada',
+        lastName: 'Lovelace',
+        name: 'Ada Lovelace',
+        displayName: 'Ada Lovelace',
+      }),
+    );
   });
 
   it('blocks suspended schools', async () => {

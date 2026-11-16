@@ -115,12 +115,19 @@ export class JwtAuthGuard implements CanActivate {
       dbUser.role === UserRole.SUPER_ADMIN
         ? UserRole.SUPER_ADMIN
         : (membership?.role ?? dbUser.role);
+    const firstName = dbUser.firstName ?? '';
+    const lastName = dbUser.lastName ?? '';
+    const displayName = [firstName, lastName].filter(Boolean).join(' ').trim();
 
     request.user = {
       id: dbUser.id,
       supabaseUserId: dbUser.id,
       sub: dbUser.id,
       email: dbUser.email,
+      firstName,
+      lastName,
+      name: displayName || dbUser.email,
+      displayName: displayName || dbUser.email,
       role,
       schoolId: membership?.schoolId,
       mustChangePassword: dbUser.mustChangePassword,

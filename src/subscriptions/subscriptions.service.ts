@@ -276,7 +276,7 @@ export class SubscriptionsService {
         endDate,
       },
       include: {
-        school: true,
+        school: {select:{ id: true, name: true, email: true}},
         plan: true,
       },
     });
@@ -287,7 +287,7 @@ export class SubscriptionsService {
 
     return this.prisma.subscription.findMany({
       include: {
-        school: true,
+        school: {select:{ id: true, name: true, email: true}},
         plan: true,
       },
       orderBy: {
@@ -303,11 +303,11 @@ export class SubscriptionsService {
 
     const subscription = await this.prisma.subscription.findUnique({
       where: {
-        schoolId,
+        id: schoolId,
       },
       include: {
         plan: true,
-        school: true,
+        school:{select:{ id: true, name: true, email:true}}
       },
     });
 
@@ -392,7 +392,7 @@ export class SubscriptionsService {
         id,
       },
       include: {
-        school: true,
+        school:{select:{ id: true, name: true, email: true}},
         plan: true,
       },
     });
@@ -477,7 +477,7 @@ export class SubscriptionsService {
         endDate,
       },
       include: {
-        school: true,
+        school: {select:{ id: true, name: true, email: true}},
         plan: true,
       },
     });
@@ -525,7 +525,7 @@ export class SubscriptionsService {
       },
       data,
       include: {
-        school: true,
+        school: {select:{ id: true, name: true, email: true}},
         plan: true,
       },
     });
@@ -567,7 +567,7 @@ export class SubscriptionsService {
         cancelledAt: new Date(),
       },
       include: {
-        school: true,
+        school: {select:{ id: true, name: true, email: true}},
         plan: true,
       },
     });

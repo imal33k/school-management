@@ -6,6 +6,10 @@ export interface RequestUser {
   supabaseUserId: string;
   sub: string;
   email: string;
+  firstName?: string;
+  lastName?: string;
+  name?: string;
+  displayName?: string;
   role: UserRole;
   schoolId?: string;
   mustChangePassword?: boolean;
