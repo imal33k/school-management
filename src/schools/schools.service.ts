@@ -214,6 +214,15 @@ export class SchoolsService {
 
   async updateMine(dto: UpdateSchoolDto, user: RequestUser) {
     this.ensureCanManage(user);
+    const hasUpdate = Object.values(dto).some(
+  (value) => value !== undefined,
+);
+
+if (!hasUpdate) {
+  throw new BadRequestException(
+    'Provide at least one field to update',
+  );
+}
 
     const schoolId = await this.getSchoolId(user);
 
@@ -245,9 +254,9 @@ export class SchoolsService {
         id: schoolId,
       },
       data: {
-        ...(dto.name !== undefined
+        ...(dto.schoolname !== undefined
           ? {
-              name: dto.name,
+              name: dto.schoolname,
             }
           : {}),
 

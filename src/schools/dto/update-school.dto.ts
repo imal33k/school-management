@@ -1,13 +1,13 @@
-import { IsOptional, IsString, IsUrl, MaxLength } from 'class-validator';
+import { IsEmail, IsOptional, IsString, IsUrl, MaxLength } from 'class-validator';
 
 export class UpdateSchoolDto {
   @IsOptional()
   @IsString()
   @MaxLength(150)
-  name?: string;
+  schoolname?: string;
 
   @IsOptional()
-  @IsString()
+  @IsEmail()
   @MaxLength(150)
   email?: string;
 

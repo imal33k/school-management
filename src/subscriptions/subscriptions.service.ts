@@ -77,8 +77,8 @@ export class SubscriptionsService {
     this.ensureCanManage(user);
     const subscription = await this.prisma.subscription.findUnique({
       where: { id },
-      include: { plan: true, school: true },
-    });
+      include: { plan: true, school: {select:{ id: true, email: true}},
+      }})
     if (!subscription) throw new NotFoundException('Subscription not found');
     if (
       user.role !== UserRole.SUPER_ADMIN &&
