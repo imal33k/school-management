@@ -1,13 +1,24 @@
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import helmet from 'helmet';
 
 import { AppModule } from './app.module';
 import { PrismaConnectionExceptionFilter } from './prisma/prisma-connection-exception.filter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { rawBody: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
   const logger = new Logger('CORS');
+
+  // The web app calls this API from its own server, so without this every visitor
+  // shares one IP and rate limits (login, enquiries) would apply to everyone at once.
+  // Set TRUST_PROXY=1 when the API is only reachable through the web app / a proxy.
+  if (process.env.TRUST_PROXY) {
+    const hops = Number(process.env.TRUST_PROXY);
+    app.set('trust proxy', Number.isInteger(hops) && hops > 0 ? hops : true);
+  }
 
   app.use(helmet());
   app.useGlobalFilters(new PrismaConnectionExceptionFilter());
@@ -77,11 +88,7 @@ async function bootstrap() {
     }),
   );
 
- const port = Number(process.env.PORT) || 3000;
-
-await app.listen(port, '0.0.0.0');
-
-console.log(`Application running on port ${port}`);
+  await app.listen(process.env.PORT ?? 3000);
 }
 
 bootstrap();

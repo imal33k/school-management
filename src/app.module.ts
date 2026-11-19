@@ -42,6 +42,7 @@ import { GradingModule } from './grading/grading.module';
 import { ReportCardsModule } from './report-cards/report-cards.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ScheduledJobsModule } from './scheduled-jobs/scheduled-jobs.module';
+import { EnquiriesModule } from './enquiries/enquiries.module';
 
 @Module({
   imports: [
@@ -99,6 +100,7 @@ import { ScheduledJobsModule } from './scheduled-jobs/scheduled-jobs.module';
     AssessmentComponentsModule,
     ReportCardsModule,
     ScheduledJobsModule,
+    EnquiriesModule,
   ],
   controllers: [AppController],
   providers: [

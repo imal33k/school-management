@@ -1072,3 +1072,33 @@ model MessageDelivery {
   @@index([status, claimedAt])
   @@index([schoolId])
 }
+
+enum EnquiryType {
+  CONTACT
+  DEMO
+}
+
+enum EnquiryStatus {
+  NEW
+  CONTACTED
+  CLOSED
+}
+
+/// Public "Contact us" / "Book a demo" submissions from the marketing site.
+model Enquiry {
+  id           String        @id @default(uuid())
+  type         EnquiryType   @default(CONTACT)
+  name         String
+  email        String
+  schoolName   String?
+  message      String
+  status       EnquiryStatus @default(NEW)
+  ipAddress    String?
+  userAgent    String?
+  notifiedAt   DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
